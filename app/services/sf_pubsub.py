@@ -1,18 +1,19 @@
-# app/services/sf_pubsub.py
 from __future__ import annotations
 
 import asyncio
 import logging
 import random
 import os
+import base64
+import time
+from datetime import datetime, timezone
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple, Callable
+from typing import Any, Dict, List, Optional, Tuple, Callable, TypedDict
 
 import requests
 import avro.schema
 import avro.io
 import grpc
-from typing import TypedDict
 
 # Prefer proto under app.sfproto, fall back to flat
 try:
@@ -21,6 +22,10 @@ try:
 except Exception:
     import pubsub_api_pb2 as pb2  # type: ignore
     import pubsub_api_pb2_grpc as pb2_grpc  # type: ignore
+
+# --- DB helpers for offsets (with graceful fallback) ---
+from sqlalchemy import text as sql_text
+from app.db import async_session_factory, DB_SCHEMA, RUN_DDL  # type: ignore
 
 
 class FatalConfigError(Exception):
@@ -39,6 +44,22 @@ IDLE_RESET_SECONDS = int(os.getenv("IDLE_RESET_SECONDS", "300"))
 FAIL_FAST_NOT_FOUND = os.getenv("FAIL_FAST_NOT_FOUND", "true").lower() in ("1", "true", "yes")
 FAIL_FAST_AUTH = os.getenv("FAIL_FAST_AUTH", "true").lower() in ("1", "true", "yes")
 
+# ---------- Replay configuration ----------
+
+@dataclass
+class ReplayArgs:
+    """
+    mode:
+      - 'stored'   : use DB/in-memory stored replay_id if present, else EARLIEST
+      - 'latest'   : start from now
+      - 'earliest' : start from earliest retained
+      - 'custom'   : start from provided replay_id_b64
+      - 'since'    : start earliest; locally drop events until commitTimestamp >= now - since_minutes
+    """
+    mode: str = "stored"
+    replay_id_b64: Optional[str] = None
+    since_minutes: Optional[int] = None
+
 
 @dataclass
 class OAuthConfig:
@@ -52,6 +73,7 @@ class OAuthConfig:
 
 @dataclass
 class ClientConfig:
+    client_db_id: int       # DB id for offsets
     client_id: str          # label used for logs
     topic_name: str         # e.g. "/data/OpportunityChangeEvent"
     webhook_url: str
@@ -59,6 +81,118 @@ class ClientConfig:
     pubsub_host: Optional[str] = None
     tenant_id: Optional[str] = None
     flow_batch_size: int = 100
+
+
+# ---- Offsets storage (DB with graceful in-memory fallback) ----
+
+# in-memory fallback map when table is not available
+# key: (client_id, topic) -> (last_replay_b64, last_commit_ms)
+_OFFSETS_MEM: Dict[Tuple[int, str], Tuple[Optional[str], Optional[int]]] = {}
+
+async def _ensure_offsets_table():
+    """
+    Create a table compatible with your SQLModel if missing.
+    Matches: id, client_id, topic_name, last_replay_b64, last_commit_ts, updated_at
+    """
+    if not RUN_DDL:
+        return
+    ddl = f"""
+    CREATE TABLE IF NOT EXISTS {DB_SCHEMA}.listener_offsets (
+        id              BIGSERIAL PRIMARY KEY,
+        client_id       INT NOT NULL,
+        topic_name      TEXT NOT NULL,
+        last_replay_b64 TEXT,
+        last_commit_ts  TIMESTAMPTZ,
+        updated_at      TIMESTAMPTZ DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS listener_offsets_client_topic_idx
+      ON {DB_SCHEMA}.listener_offsets (client_id, topic_name);
+    """
+    try:
+        async with async_session_factory() as s:
+            await s.execute(sql_text(f"SET search_path TO {DB_SCHEMA}, public"))
+            for stmt in ddl.strip().split(";"):
+                if stmt.strip():
+                    await s.execute(sql_text(stmt))
+            await s.commit()
+            LOG.info("Ensured table %s.listener_offsets exists.", DB_SCHEMA)
+    except Exception as e:
+        LOG.warning("listener_offsets DDL failed (memory fallback will be used if needed): %r", e)
+
+async def _load_replay_b64(client_db_id: int, topic: str) -> Optional[str]:
+    """Read last_replay_b64 from DB; fall back to memory cache."""
+    try:
+        async with async_session_factory() as s:
+            await s.execute(sql_text(f"SET search_path TO {DB_SCHEMA}, public"))
+            q = f"""
+                SELECT last_replay_b64
+                FROM {DB_SCHEMA}.listener_offsets
+                WHERE client_id=:cid AND topic_name=:tn
+                ORDER BY updated_at DESC
+                LIMIT 1
+            """
+            row = (await s.execute(sql_text(q), {"cid": client_db_id, "tn": topic})).first()
+            if row:
+                return row[0]
+    except Exception as e:
+        LOG.debug("load replay fallback due to error: %r", e)
+    return _OFFSETS_MEM.get((client_db_id, topic), (None, None))[0]
+
+async def _save_replay_b64(client_db_id: int, topic: str, replay_b64: str, last_commit_ms: Optional[int]) -> None:
+    """Upsert last_replay_b64 and last_commit_ts."""
+    dt_ts: Optional[datetime] = None
+    if last_commit_ms is not None:
+        try:
+            dt_ts = datetime.fromtimestamp(last_commit_ms / 1000.0, tz=timezone.utc)
+        except Exception:
+            dt_ts = None
+    try:
+        await _ensure_offsets_table()
+        async with async_session_factory() as s:
+            await s.execute(sql_text(f"SET search_path TO {DB_SCHEMA}, public"))
+            params = {"cid": client_db_id, "tn": topic, "rid": replay_b64, "ts": dt_ts}
+            upd = f"""
+                UPDATE {DB_SCHEMA}.listener_offsets
+                SET last_replay_b64=:rid, last_commit_ts=:ts, updated_at=now()
+                WHERE client_id=:cid AND topic_name=:tn
+            """
+            result = await s.execute(sql_text(upd), params)
+            if getattr(result, "rowcount", 0) == 0:
+                ins = f"""
+                    INSERT INTO {DB_SCHEMA}.listener_offsets
+                    (client_id, topic_name, last_replay_b64, last_commit_ts)
+                    VALUES (:cid, :tn, :rid, :ts)
+                """
+                await s.execute(sql_text(ins), params)
+            await s.commit()
+            _OFFSETS_MEM[(client_db_id, topic)] = (replay_b64, last_commit_ms)
+            return
+    except Exception as e:
+        LOG.debug("offset upsert failed (fallback to memory): %r", e)
+    _OFFSETS_MEM[(client_db_id, topic)] = (replay_b64, last_commit_ms)
+
+def _b64encode(b: bytes) -> str:
+    return base64.b64encode(b).decode("ascii")
+
+def _b64decode(s: str) -> bytes:
+    return base64.b64decode(s.encode("ascii"))
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+def _normalize_commit_ms(val: Any) -> Optional[int]:
+    try:
+        x = int(val)
+    except Exception:
+        return None
+    # heuristics: ns > 1e14, ms > 1e11, s > 1e9
+    if x > 10**14:      # ns
+        return x // 1_000_000
+    if x > 10**11:      # ms
+        return x
+    if x > 10**9:       # s
+        return x * 1000
+    return x  # small test values
 
 
 class SalesforceAuth:
@@ -177,18 +311,28 @@ async def _post_webhook(url: str, payload: Dict[str, Any], client_name: str, max
     return last_status
 
 
+# ---------- Listener ----------
+
+@dataclass
+class ReplayStart:
+    preset: int  # pb2.LATEST / EARLIEST / CUSTOM
+    replay_id: Optional[bytes] = None
+    drop_before_ms: Optional[int] = None  # used when mode='since'
+
 class SFListener:
     """
     One client = one gRPC channel + one subscription stream.
     Keeps simple status for diagnostics.
     """
-    def __init__(self, cfg: ClientConfig):
+    def __init__(self, cfg: ClientConfig, replay_start: ReplayStart | None = None):
         self.cfg = cfg
         self.auth = SalesforceAuth(cfg.oauth, cfg.client_id)
         self._channel: Optional[grpc.aio.Channel] = None
         self._stub: Optional[pb2_grpc.PubSubStub] = None
         self._decoder: Optional[AvroDecoder] = None
         self._stop = asyncio.Event()
+
+        self._replay_start = replay_start or ReplayStart(preset=pb2.LATEST)
 
         self.status: Dict[str, Any] = {
             "client_id": cfg.client_id,
@@ -200,6 +344,14 @@ class SFListener:
             "last_webhook_status": None,
             "schema_id": None,
             "fatal": False,
+            # a little visibility into our start choice
+            "replay_start": {
+                "preset": ("LATEST" if self._replay_start.preset == pb2.LATEST else
+                           "EARLIEST" if self._replay_start.preset == pb2.EARLIEST else "CUSTOM"),
+                "has_id": bool(self._replay_start.replay_id),
+                "drop_before_ms": self._replay_start.drop_before_ms,
+            },
+            "last_replay_b64": None,
         }
 
     def _md(self) -> List[Tuple[str, str]]:
@@ -314,11 +466,16 @@ class SFListener:
 
         async def request_gen():
             try:
-                yield pb2.FetchRequest(
+                # Initial credit with our replay choice
+                req_kwargs = dict(
                     topic_name=self.cfg.topic_name,
-                    replay_preset=pb2.LATEST,
+                    replay_preset=self._replay_start.preset,
                     num_requested=self.cfg.flow_batch_size,
                 )
+                if self._replay_start.preset == pb2.CUSTOM and self._replay_start.replay_id:
+                    req_kwargs["replay_id"] = self._replay_start.replay_id  # bytes
+                yield pb2.FetchRequest(**req_kwargs)
+
                 while True:
                     req = await queue.get()
                     if req is None:
@@ -362,22 +519,46 @@ class SFListener:
                         ev = ce.event
                         schema_id = ev.schema_id
                         payload = ev.payload
+
                         decoded = await self._decoder.decode(schema_id, payload)
                         header = decoded.get("ChangeEventHeader", {})
+                        commit_ms = _normalize_commit_ms(header.get("commitTimestamp"))
+
+                        # If running with "since", optionally skip old events,
+                        # but still advance the stored replay id so restarts don't re-stream them.
+                        if self._replay_start.drop_before_ms is not None and commit_ms is not None:
+                            if commit_ms < self._replay_start.drop_before_ms:
+                                rid_bytes = getattr(ev, "replay_id", None) or getattr(ce, "replay_id", None)
+                                if isinstance(rid_bytes, (bytes, bytearray)):
+                                    rid_b64 = _b64encode(bytes(rid_bytes))
+                                    await _save_replay_b64(self.cfg.client_db_id, self.cfg.topic_name, rid_b64, commit_ms)
+                                    self.status["last_replay_b64"] = rid_b64
+                                continue  # skip webhook
+
+                        # process
                         entity = header.get("entityName", "Unknown")
                         change_type = header.get("changeType", "Unknown")
-                        commit_ts = header.get("commitTimestamp")
                         ids = header.get("recordIds", [])
                         LOG.info("[%s] Event: entity=%s type=%s ids=%s ts=%s",
-                                 self.cfg.client_id, entity, change_type, ids, commit_ts)
+                                 self.cfg.client_id, entity, change_type, ids, commit_ms)
+
                         status = await _post_webhook(self.cfg.webhook_url, {
                             "client_id": self.cfg.client_id,
                             "topic": self.cfg.topic_name,
                             "schema_id": schema_id,
                             "decoded": decoded,
                         }, self.cfg.client_id)
+
+                        # Only commit offset if webhook accepted (2xx)
+                        if 200 <= status < 300:
+                            rid_bytes = getattr(ev, "replay_id", None) or getattr(ce, "replay_id", None)
+                            if isinstance(rid_bytes, (bytes, bytearray)):
+                                rid_b64 = _b64encode(bytes(rid_bytes))
+                                await _save_replay_b64(self.cfg.client_db_id, self.cfg.topic_name, rid_b64, commit_ms)
+                                self.status["last_replay_b64"] = rid_b64
+
                         self.status["events_received"] += 1
-                        self.status["last_event_at"] = commit_ts
+                        self.status["last_event_at"] = commit_ms
                         self.status["last_webhook_status"] = status
                     except Exception as e:
                         self.status["last_error"] = f"Event processing error: {e!r}"
@@ -412,10 +593,15 @@ async def run_salesforce_pubsub(
     client_row,
     stop_event: asyncio.Event,
     clog: Callable[[int, str], None] | None = None,
+    *,
+    replay: Optional[ReplayArgs] = None,
 ) -> None:
     """
     Adapter so ListenerManager can start/stop without knowing SF internals.
     """
+    # Ensure offsets table exists if allowed
+    await _ensure_offsets_table()
+
     oauth = OAuthConfig(
         login_url=client_row.login_url,
         client_id=client_row.oauth_client_id,
@@ -425,6 +611,7 @@ async def run_salesforce_pubsub(
         auth_grant_type=client_row.oauth_grant_type,
     )
     cfg = ClientConfig(
+        client_db_id=client_row.id,
         client_id=client_row.client_name,
         topic_name=client_row.topic_name,
         webhook_url=client_row.webhook_url,
@@ -434,7 +621,41 @@ async def run_salesforce_pubsub(
         flow_batch_size=int(getattr(client_row, "flow_batch_size", 100) or 100),
     )
 
-    listener = SFListener(cfg)
+    # Compute the replay start
+    mode = (replay.mode if replay else "stored").lower()
+    if mode == "latest":
+        LOG.info("[%s] Replay start: LATEST", cfg.client_id)
+        start = ReplayStart(preset=pb2.LATEST)
+
+    elif mode == "earliest":
+        LOG.info("[%s] Replay start: EARLIEST (backfill within SF retention)", cfg.client_id)
+        start = ReplayStart(preset=pb2.EARLIEST)
+
+    elif mode == "custom" and replay and replay.replay_id_b64:
+        try:
+            rid = _b64decode(replay.replay_id_b64)
+            LOG.info("[%s] Replay start: CUSTOM id provided", cfg.client_id)
+            start = ReplayStart(preset=pb2.CUSTOM, replay_id=rid)
+        except Exception:
+            LOG.error("[%s] invalid custom replay_id_b64; falling back to LATEST", cfg.client_id)
+            start = ReplayStart(preset=pb2.LATEST)
+
+    elif mode == "since" and replay and replay.since_minutes and replay.since_minutes > 0:
+        cutoff = _now_ms() - (replay.since_minutes * 60 * 1000)
+        LOG.info("[%s] Replay start: SINCE %s min (EARLIEST + local drop before %s)",
+                 cfg.client_id, replay.since_minutes, cutoff)
+        start = ReplayStart(preset=pb2.EARLIEST, drop_before_ms=cutoff)
+
+    else:  # stored (default): use saved id if present, else earliest
+        rid_b64 = await _load_replay_b64(cfg.client_db_id, cfg.topic_name)
+        if rid_b64:
+            LOG.info("[%s] Replay start: STORED (using saved id)", cfg.client_id)
+            start = ReplayStart(preset=pb2.CUSTOM, replay_id=_b64decode(rid_b64))
+        else:
+            LOG.info("[%s] Replay start: no saved id -> EARLIEST (first run backfill within retention)", cfg.client_id)
+            start = ReplayStart(preset=pb2.EARLIEST)
+
+    listener = SFListener(cfg, replay_start=start)
     task = asyncio.create_task(listener.start(), name=f"sf-listener-{client_row.id}")
 
     try:
@@ -457,7 +678,6 @@ async def run_salesforce_pubsub(
                 await task
             except asyncio.CancelledError:
                 pass
-
 
 
 # --- connection test helper ---
@@ -483,7 +703,6 @@ async def test_salesforce_connection(
     auth = SalesforceAuth(oauth, client_name="test")
     loop = asyncio.get_running_loop()
 
-    # Run sync requests in a thread so we don't block the event loop
     try:
         await loop.run_in_executor(None, auth.authenticate)
     except FatalConfigError as e:
@@ -499,7 +718,6 @@ async def test_salesforce_connection(
         "instance_url": auth.instance_url,
     }
 
-    # Optionally validate the topic via Pub/Sub GetTopic
     if topic_name:
         host = (pubsub_host or "api.pubsub.salesforce.com:7443")
         channel = grpc.aio.secure_channel(
@@ -531,6 +749,5 @@ async def test_salesforce_connection(
             except Exception:
                 pass
 
-    # overall ok = auth ok AND (topic ok if provided)
     result["ok"] = result["auth"]["ok"] and (result.get("topic", {"ok": True})["ok"])
     return result

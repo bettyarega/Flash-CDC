@@ -91,7 +91,7 @@ function AuthedApp({ onLogout }: { onLogout: () => void }) {
   )
 }
 
-/** Existing clients dashboard preserved */
+/** Clients dashboard + Restart modal */
 function ClientsPanel() {
   const [clients, setClients] = useState<Client[]>([])
   const [loading, setLoading] = useState(true)
@@ -102,6 +102,9 @@ function ClientsPanel() {
 
   const [listenerMap, setListenerMap] = useState<Record<number, ListenerState>>({})
   const [busyRow, setBusyRow] = useState<number | null>(null)
+
+  // NEW: restart modal target
+  const [restartFor, setRestartFor] = useState<number | null>(null)
 
   async function refreshClients() {
     setLoading(true)
@@ -182,7 +185,7 @@ function ClientsPanel() {
   async function handleStartListener(id: number) {
     setBusyRow(id)
     try {
-      await startListener(id)
+      await startListener(id) // default mode handled by backend
       await refreshStatuses()
     } catch (e: any) {
       alert(e.message ?? String(e))
@@ -203,10 +206,13 @@ function ClientsPanel() {
     }
   }
 
-  async function handleRestartListener(id: number) {
+  async function performRestart(id: number, opts: RestartFormState) {
     setBusyRow(id)
     try {
-      await restartListener(id)
+      const payload: any = { mode: opts.mode }
+      if (opts.mode === 'since') payload.since_minutes = opts.sinceMinutes
+      if (opts.mode === 'custom') payload.replay_id_b64 = opts.replayIdB64.trim()
+      await restartListener(id, payload)
       await refreshStatuses()
     } catch (e: any) {
       alert(e.message ?? String(e))
@@ -286,9 +292,9 @@ function ClientsPanel() {
                         <button
                           className="px-2 py-1 rounded border"
                           disabled={disabled}
-                          onClick={() => handleRestartListener(c.id!)}
+                          onClick={() => setRestartFor(c.id!)}  // OPEN DIALOG
                         >
-                          {disabled ? 'Restarting…' : 'Restart'}
+                          {disabled ? 'Restarting…' : 'Restart…'}
                         </button>
                       </div>
                     </td>
@@ -328,6 +334,7 @@ function ClientsPanel() {
           <ClientForm mode="create" onSubmit={handleCreate} onCancel={() => setShowCreate(false)} />
         </Modal>
       )}
+
       {/* Edit modal */}
       {editing && (
         <Modal onClose={() => setEditClientId(null)}>
@@ -339,11 +346,135 @@ function ClientsPanel() {
           />
         </Modal>
       )}
+
+      {/* Restart modal */}
+      {restartFor != null && (
+        <Modal onClose={() => setRestartFor(null)}>
+          <RestartDialog
+            onCancel={() => setRestartFor(null)}
+            onConfirm={async (opts) => {
+              await performRestart(restartFor, opts)
+              setRestartFor(null)
+            }}
+          />
+        </Modal>
+      )}
     </>
   )
 }
 
-/** New Users admin panel */
+/** Restart dialog content */
+type RestartFormState = {
+  mode: 'stored' | 'latest' | 'earliest' | 'since' | 'custom'
+  sinceMinutes: number
+  replayIdB64: string
+}
+
+function RestartDialog({
+  onCancel,
+  onConfirm,
+}: {
+  onCancel: () => void
+  onConfirm: (opts: RestartFormState) => void | Promise<void>
+}) {
+  const [state, setState] = useState<RestartFormState>({
+    mode: 'stored',
+    sinceMinutes: 60,
+    replayIdB64: '',
+  })
+  const [submitting, setSubmitting] = useState(false)
+
+  function Radio({
+    value,
+    label,
+    children,
+  }: {
+    value: RestartFormState['mode']
+    label: string
+    children?: React.ReactNode
+  }) {
+    const checked = state.mode === value
+    return (
+      <label className="flex flex-col gap-2 border rounded p-3">
+        <div className="flex items-center gap-2">
+          <input
+            type="radio"
+            name="replay_mode"
+            checked={checked}
+            onChange={() => setState((s) => ({ ...s, mode: value }))}
+          />
+          <span className="font-medium">{label}</span>
+        </div>
+        <div className={`pl-6 ${checked ? '' : 'opacity-50 pointer-events-none'}`}>
+          {children}
+        </div>
+      </label>
+    )
+  }
+
+  async function submit() {
+    setSubmitting(true)
+    try {
+      await onConfirm(state)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <h2 className="text-lg font-semibold">Restart Listener</h2>
+      <p className="text-sm text-neutral-600">
+        Choose how to replay events when restarting this listener.
+      </p>
+
+      <div className="grid gap-3">
+        <Radio value="stored" label="Stored (resume from saved replay cursor)" />
+        <Radio value="latest" label="Latest (ignore past, only new events)" />
+        <Radio value="earliest" label="Earliest (replay from the oldest retained event)" />
+        <Radio value="since" label="Since (replay from N minutes ago)">
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              min={1}
+              className="rounded border px-3 py-2 w-32"
+              value={state.sinceMinutes}
+              onChange={(e) =>
+                setState((s) => ({ ...s, sinceMinutes: Math.max(1, Number(e.target.value || 1)) }))
+              }
+            />
+            <span className="text-sm text-neutral-600">minutes ago</span>
+          </div>
+        </Radio>
+        <Radio value="custom" label="Custom Replay ID (base64)">
+          <input
+            type="text"
+            className="rounded border px-3 py-2 w-full"
+            placeholder="Enter base64-encoded replay id"
+            value={state.replayIdB64}
+            onChange={(e) => setState((s) => ({ ...s, replayIdB64: e.target.value }))}
+          />
+          <p className="text-xs text-neutral-500 mt-1">
+            Use a base64-encoded Salesforce replay id if you’ve captured it.
+          </p>
+        </Radio>
+      </div>
+
+      <div className="flex items-center gap-3 pt-1">
+        <button className="px-3 py-2 rounded border" onClick={onCancel}>Cancel</button>
+        <button
+          className="px-3 py-2 rounded bg-black text-white"
+          onClick={submit}
+          disabled={submitting}
+        >
+          {submitting ? 'Restarting…' : 'Restart'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+/** Users admin panel (unchanged) */
 function UsersPanel() {
   const [rows, setRows] = useState<User[]>([])
   const [loading, setLoading] = useState(true)

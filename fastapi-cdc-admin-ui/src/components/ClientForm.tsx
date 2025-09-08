@@ -1,5 +1,5 @@
 // src/components/ClientForm.tsx
-import { useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { Client } from '../types'
 import { testConnection, type TestConnectionPayload, type TestConnectionResult } from '../api/clients'
 
@@ -22,10 +22,20 @@ export default function ClientForm({ mode, initial, onSubmit, onCancel }: Props)
     topic_name: '',
     webhook_url: '',
     pubsub_host: 'api.pubsub.salesforce.com:7443',
+    tenant_id: '',          // NEW: present in DB
     flow_batch_size: 100,
     is_active: true,
-    ...initial,
+    ...initial,             // first paint will use whatever parent already has
   })
+
+  // Hydrate once when edit modal opens and the parent finishes fetching full row (w/ secrets)
+  const [hydrated, setHydrated] = useState(false)
+  useEffect(() => {
+    if (mode === 'edit' && initial && !hydrated) {
+      setValues(v => ({ ...v, ...initial }))
+      setHydrated(true)
+    }
+  }, [mode, initial, hydrated])
 
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
@@ -36,6 +46,20 @@ export default function ClientForm({ mode, initial, onSubmit, onCancel }: Props)
 
   function onChange<K extends keyof Client>(key: K, val: any) {
     setValues(v => ({ ...v, [key]: val }))
+  }
+
+  function onGrantTypeChange(v: string) {
+    // If moving to client_credentials, clear username/password to avoid sending them
+    if (v === 'client_credentials') {
+      setValues(s => ({
+        ...s,
+        oauth_grant_type: v as any,
+        oauth_username: '',
+        oauth_password: '',
+      }))
+    } else {
+      setValues(s => ({ ...s, oauth_grant_type: v as any }))
+    }
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -62,8 +86,8 @@ export default function ClientForm({ mode, initial, onSubmit, onCancel }: Props)
         oauth_password: values.oauth_password ?? undefined,
         topic_name: values.topic_name ?? undefined,
         pubsub_host: values.pubsub_host ?? undefined,
-        tenant_id: (values as any).tenant_id ?? undefined,
-        check_topic: !!values.topic_name, // only check topic if user filled one
+        tenant_id: (values as any).tenant_id ?? undefined, // NEW
+        check_topic: !!values.topic_name,
       }
       const res = await testConnection(payload)
       setTestResult(res)
@@ -98,7 +122,7 @@ export default function ClientForm({ mode, initial, onSubmit, onCancel }: Props)
         <Select
           label="OAuth Grant Type"
           value={values.oauth_grant_type ?? 'password'}
-          onChange={v => onChange('oauth_grant_type', v)}
+          onChange={onGrantTypeChange}
           options={[
             { value: 'password', label: 'password' },
             { value: 'client_credentials', label: 'client_credentials' },
@@ -107,7 +131,7 @@ export default function ClientForm({ mode, initial, onSubmit, onCancel }: Props)
 
         <TextInput label="Client ID" value={values.oauth_client_id ?? ''} onChange={v => onChange('oauth_client_id', v)} required />
 
-        {/* CHANGED: plain text (no masking) */}
+        {/* Secret shown as plain text per your preference */}
         <TextInput
           label="Client Secret"
           type="text"
@@ -119,8 +143,6 @@ export default function ClientForm({ mode, initial, onSubmit, onCancel }: Props)
         {isPasswordGrant && (
           <>
             <TextInput label="Username" value={values.oauth_username ?? ''} onChange={v => onChange('oauth_username', v)} />
-
-            {/* CHANGED: plain text (no masking) */}
             <TextInput
               label="Password"
               type="text"
@@ -147,7 +169,27 @@ export default function ClientForm({ mode, initial, onSubmit, onCancel }: Props)
           placeholder="api.pubsub.salesforce.com:7443"
         />
 
-        <NumberInput label="Flow Batch Size" value={values.flow_batch_size ?? 100} onChange={v => onChange('flow_batch_size', v)} min={1} />
+        {/* NEW: Tenant Id (optional) */}
+        <TextInput
+          label="Tenant ID (Org Id)"
+          value={(values as any).tenant_id ?? ''}
+          onChange={v => onChange('tenant_id' as any, v)}
+          placeholder="00Dxxxxxxxxxxxx"
+        />
+
+        {/* <NumberInput
+          label="Flow Batch Size"
+          value={values.flow_batch_size ?? 100}
+          onChange={v => onChange('flow_batch_size', v)}
+          min={1}
+        /> */}
+
+        {/* NEW: Active toggle */}
+        <Checkbox
+          label="Active"
+          checked={!!values.is_active}
+          onChange={(v) => onChange('is_active', v)}
+        />
       </div>
 
       <div className="flex items-center gap-3 pt-2">
@@ -247,6 +289,20 @@ function Select(props: { label: string; value: string; onChange: (v: string) => 
           </option>
         ))}
       </select>
+    </label>
+  )
+}
+
+function Checkbox(props: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <label className="flex items-center gap-2">
+      <input
+        type="checkbox"
+        checked={props.checked}
+        onChange={(e) => props.onChange(e.target.checked)}
+        className="h-4 w-4"
+      />
+      <span className="text-sm text-neutral-600">{props.label}</span>
     </label>
   )
 }

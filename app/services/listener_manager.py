@@ -1,4 +1,3 @@
-# app/services/listener_manager.py
 from __future__ import annotations
 
 import asyncio
@@ -12,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import async_session_factory, DB_SCHEMA
 from ..models import Client
-from .sf_pubsub import run_salesforce_pubsub  # worker entrypoint
+from .sf_pubsub import run_salesforce_pubsub, ReplayArgs  # worker entrypoint + replay
 
 log = logging.getLogger("listener-manager")
 
@@ -33,9 +32,20 @@ class Listener:
         self._task: Optional[asyncio.Task] = None
         self._stop_event = asyncio.Event()
         self.state = ListenerState(client_id=client_id, status="stopped")
+        self._replay: Optional[ReplayArgs] = None  # current replay request
 
     def is_running(self) -> bool:
         return self._task is not None and not self._task.done()
+
+    def set_replay(self, replay: Optional[dict]) -> None:
+        if replay:
+            self._replay = ReplayArgs(
+                mode=(replay.get("mode") or "stored"),
+                replay_id_b64=replay.get("replay_id_b64"),
+                since_minutes=replay.get("since_minutes"),
+            )
+        else:
+            self._replay = None
 
     def start(self) -> None:
         if self.is_running():
@@ -68,13 +78,11 @@ class Listener:
             log.info("[manager] runner: client %s stopped", self.client_id)
 
     async def status(self) -> dict:
-        # reflect task errors
         if self._task and self._task.done() and self.state.status not in ("stopped", "stopping"):
             exc = self._task.exception()
             if exc:
                 self.state.status = "error"
                 self.state.last_error = str(exc)
-        # convenience: include a boolean
         d = asdict(self.state)
         d["running"] = self.is_running() or self.state.status in ("starting", "running")
         return d
@@ -92,18 +100,16 @@ class Listener:
                 if not client.is_active:
                     raise RuntimeError(f"Client {self.client_id} is not active")
 
-                # Reset error/fail state
                 self.state.last_error = None
                 self.state.fail_count = 0
                 backoff = 1
 
-                # heartbeat hook to mark last_beat
                 def _log(level: int, msg: str):
                     self.state.last_beat = datetime.now(timezone.utc)
                     logging.getLogger("sf-listener").log(level, f"[client:{client.id}:{client.client_name}] {msg}")
 
                 self.state.status = "running"
-                await run_salesforce_pubsub(client, self._stop_event, _log)
+                await run_salesforce_pubsub(client, self._stop_event, _log, replay=self._replay)
                 break  # graceful stop
 
             except asyncio.CancelledError:
@@ -122,7 +128,6 @@ class Listener:
         self.state.status = "stopped"
 
     async def _load_client(self) -> Optional[Client]:
-        # Use a fresh session to read latest config before (re)starting
         async with async_session_factory() as session:
             await session.execute(text(f"SET search_path TO {DB_SCHEMA}, public"))
             result = await session.execute(select(Client).where(Client.id == self.client_id))
@@ -134,13 +139,13 @@ class ListenerManager:
         self._listeners: Dict[int, Listener] = {}
         self._lock = asyncio.Lock()
 
-    async def start(self, db: AsyncSession, client_id: int) -> dict:
-        # db kept for signature symmetry; not used here (Listener loads fresh)
+    async def start(self, db: AsyncSession, client_id: int, *, replay: Optional[dict] = None) -> dict:
         async with self._lock:
             listener = self._listeners.get(client_id)
             if not listener:
                 listener = Listener(client_id=client_id)
                 self._listeners[client_id] = listener
+            listener.set_replay(replay)
             if not listener.is_running():
                 listener.start()
             return await listener.status()
@@ -153,35 +158,28 @@ class ListenerManager:
         await listener.stop()
         return await listener.status()
 
-    async def restart(self, db: AsyncSession, client_id: int) -> dict:
-        # stop (if any), then start again
+    async def restart(self, db: AsyncSession, client_id: int, *, replay: Optional[dict] = None) -> dict:
         await self.stop(client_id)
-        return await self.start(db, client_id)
+        return await self.start(db, client_id, replay=replay)
 
     async def status(self, client_id: int) -> dict:
         async with self._lock:
             listener = self._listeners.get(client_id)
             if not listener:
-                # not tracked -> report stopped
                 return {"client_id": client_id, "status": "stopped", "running": False}
             return await listener.status()
 
     async def status_all(self) -> dict:
-        # NEW: what /listeners expects
         async with self._lock:
             items = []
             for cid, lst in self._listeners.items():
                 items.append(await lst.status())
         return {"items": items}
 
-    # Keep backward-compat with earlier code that called manager.list()
     async def list(self) -> dict:
         return await self.status_all()
 
     async def autostart_active(self, db: AsyncSession) -> int:
-        """
-        Start listeners for all active clients in DB.
-        """
         await db.execute(text(f"SET search_path TO {DB_SCHEMA}, public"))
         rows = (await db.execute(select(Client).where(Client.is_active == True))).scalars().all()  # noqa: E712
         n = 0

@@ -3,9 +3,9 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select, func
 import logging
-from app.services.sf_pubsub import OAuthConfig, test_salesforce_connection
 from pydantic import BaseModel
 
+from app.services.sf_pubsub import OAuthConfig, test_salesforce_connection
 from app.services.listener_manager import manager
 from ..db import get_session
 from ..models import (
@@ -21,6 +21,7 @@ from app.security import require_roles, RoleEnum
 router = APIRouter()
 log = logging.getLogger("listener-manager")
 
+
 # --- Helpers ---
 
 async def fetch_client_or_404(session: AsyncSession, client_id: int) -> Client:
@@ -30,7 +31,7 @@ async def fetch_client_or_404(session: AsyncSession, client_id: int) -> Client:
     return client
 
 def maybe_secrets(include_secrets: bool):
-    # Just used to annotate response models in doc, actual shape built at runtime
+    # Only used for OpenAPI typing hints (we build the actual shape at runtime)
     return ClientReadWithSecrets if include_secrets else ClientReadSafe
 
 
@@ -54,7 +55,6 @@ class TestConnectionPayload(BaseModel):
 
 @router.post("/test-connection", dependencies=[Depends(require_roles(RoleEnum.admin, RoleEnum.user))])
 async def test_connection(payload: TestConnectionPayload):
-    # unchanged...
     oauth = OAuthConfig(
         login_url=payload.login_url,
         client_id=payload.oauth_client_id,
@@ -71,16 +71,16 @@ async def test_connection(payload: TestConnectionPayload):
     )
     return res
 
+
 @router.post(
     "/",
     status_code=status.HTTP_201_CREATED,
-    response_model=ClientReadSafe,  # doc default; we return safe unless include_secrets=true
+    response_model=ClientReadWithSecrets,  # doc hint (we still control runtime shape)
     dependencies=[Depends(require_roles(RoleEnum.admin, RoleEnum.user))],
-
 )
 async def create_client(
     payload: ClientCreate,
-    include_secrets: bool = Query(False, description="TEMP: include secrets in response (dev only)"),
+    include_secrets: bool = Query(True, description="If true (default), return full row with secrets."),
     session: AsyncSession = Depends(get_session),
 ):
     # Create row
@@ -89,10 +89,11 @@ async def create_client(
     await session.commit()
     await session.refresh(client)
 
-    # 🔹 AUTOSTART: if active, start its listener after commit so id exists
+    # AUTOSTART: if active, start its listener after commit so id exists
     if client.is_active:
         try:
-            await manager.start(client.id)
+            # pass the DB session into the manager.start signature
+            await manager.start(session, client.id)
         except Exception as e:
             # Don’t fail the API response; the DB write succeeded
             log.error("post-create listener start failed for %s: %r", client.id, e)
@@ -100,12 +101,17 @@ async def create_client(
     return client if include_secrets else to_safe(client)
 
 
-@router.get("/", response_model=dict, dependencies=[Depends(require_roles(RoleEnum.admin, RoleEnum.user))])
+@router.get(
+    "/",
+    response_model=dict,  # {"items":[...], "total":..., "limit":..., "offset":...}
+    dependencies=[Depends(require_roles(RoleEnum.admin, RoleEnum.user))],
+)
 async def list_clients(
     q: Optional[str] = Query(None, description="Filter by client_name (icontains)"),
     is_active: Optional[bool] = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    include_secrets: bool = Query(True, description="If true (default), return full rows with secrets."),
     session: AsyncSession = Depends(get_session),
 ):
     stmt = select(Client)
@@ -124,25 +130,38 @@ async def list_clients(
     total = (await session.execute(count_stmt)).scalar_one()
     results = (await session.execute(stmt)).scalars().all()
 
-    items = [to_safe(c) for c in results]
+    # Build items with or without secrets
+    if include_secrets:
+        items = results  # full ORM objects include secret fields
+    else:
+        items = [to_safe(c) for c in results]
+
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
-@router.get("/{client_id}", dependencies=[Depends(require_roles(RoleEnum.admin, RoleEnum.user))])
+@router.get(
+    "/{client_id}",
+    response_model=maybe_secrets(True),  # doc hint only; runtime decides via include_secrets
+    dependencies=[Depends(require_roles(RoleEnum.admin, RoleEnum.user))],
+)
 async def get_client(
     client_id: int,
-    include_secrets: bool = Query(False, description="TEMP: include secrets in response (dev only)"),
+    include_secrets: bool = Query(True, description="If true (default), return full row with secrets."),
     session: AsyncSession = Depends(get_session),
 ):
     client = await fetch_client_or_404(session, client_id)
     return client if include_secrets else to_safe(client)
 
 
-@router.patch("/{client_id}", dependencies=[Depends(require_roles(RoleEnum.admin, RoleEnum.user))])
+@router.patch(
+    "/{client_id}",
+    response_model=maybe_secrets(True),  # doc hint only; runtime decides via include_secrets
+    dependencies=[Depends(require_roles(RoleEnum.admin, RoleEnum.user))],
+)
 async def update_client(
     client_id: int,
     payload: ClientUpdate,
-    include_secrets: bool = Query(False, description="TEMP: include secrets in response (dev only)"),
+    include_secrets: bool = Query(True, description="If true (default), return full row with secrets."),
     session: AsyncSession = Depends(get_session),
 ):
     client = await fetch_client_or_404(session, client_id)
@@ -159,10 +178,11 @@ async def update_client(
     await session.commit()
     await session.refresh(client)
 
-    # 🔹 RESTART/STOP based on is_active
+    # RESTART/STOP based on is_active
     try:
         if client.is_active:
-            await manager.restart(client.id)   # stop then start with new config
+            # pass DB session to restart signature
+            await manager.restart(session, client.id)
         else:
             await manager.stop(client.id)
     except Exception as e:
@@ -172,11 +192,15 @@ async def update_client(
     return client if include_secrets else to_safe(client)
 
 
-@router.delete("/{client_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_roles(RoleEnum.admin))])
+@router.delete(
+    "/{client_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_roles(RoleEnum.admin))],
+)
 async def delete_client(client_id: int, session: AsyncSession = Depends(get_session)):
     client = await fetch_client_or_404(session, client_id)
 
-    # 🔹 STOP ON DELETE (no-op if not running)
+    # STOP ON DELETE (no-op if not running)
     try:
         await manager.stop(client.id)
     except Exception as e:
