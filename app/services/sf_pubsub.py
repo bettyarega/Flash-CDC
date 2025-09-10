@@ -44,6 +44,8 @@ IDLE_RESET_SECONDS = int(os.getenv("IDLE_RESET_SECONDS", "300"))
 FAIL_FAST_NOT_FOUND = os.getenv("FAIL_FAST_NOT_FOUND", "true").lower() in ("1", "true", "yes")
 FAIL_FAST_AUTH = os.getenv("FAIL_FAST_AUTH", "true").lower() in ("1", "true", "yes")
 
+DEFAULT_PUBSUB_HOST = os.getenv("SF_PUBSUB_HOST", "api.pubsub.salesforce.com:7443")
+
 # ---------- Replay configuration ----------
 
 @dataclass
@@ -413,7 +415,7 @@ class SFListener:
         await self._cleanup_channel()
 
     async def _connect_channel(self):
-        host = self.cfg.pubsub_host or "api.pubsub.salesforce.com:7443"
+        host = self.cfg.pubsub_host or DEFAULT_PUBSUB_HOST
         LOG.info("[%s] Connecting gRPC to %s …", self.cfg.client_id, host)
         creds = grpc.ssl_channel_credentials()
         options = [
@@ -616,7 +618,7 @@ async def run_salesforce_pubsub(
         topic_name=client_row.topic_name,
         webhook_url=client_row.webhook_url,
         oauth=oauth,
-        pubsub_host=(getattr(client_row, "pubsub_host", None) or "api.pubsub.salesforce.com:7443"),
+        pubsub_host=(getattr(client_row, "pubsub_host", None) or DEFAULT_PUBSUB_HOST),
         tenant_id=getattr(client_row, "tenant_id", None),
         flow_batch_size=int(getattr(client_row, "flow_batch_size", 100) or 100),
     )
@@ -719,7 +721,7 @@ async def test_salesforce_connection(
     }
 
     if topic_name:
-        host = (pubsub_host or "api.pubsub.salesforce.com:7443")
+        host = (pubsub_host or DEFAULT_PUBSUB_HOST)
         channel = grpc.aio.secure_channel(
             host,
             grpc.ssl_channel_credentials(),

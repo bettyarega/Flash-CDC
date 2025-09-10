@@ -75,7 +75,7 @@ function sanitizeUpdatePayload(p: Partial<Client>): UpdatePayload {
     oauth_password,
     topic_name,
     webhook_url,
-    pubsub_host,
+    // pubsub_host,
     flow_batch_size,
     is_active,
   } = p as any
@@ -87,7 +87,7 @@ function sanitizeUpdatePayload(p: Partial<Client>): UpdatePayload {
     oauth_client_id,
     topic_name,
     webhook_url,
-    pubsub_host,
+    // pubsub_host,
     is_active,
   }
 
@@ -130,7 +130,7 @@ export type TestConnectionPayload = {
   oauth_username?: string | null
   oauth_password?: string | null
   topic_name?: string | null
-  pubsub_host?: string | null
+  // pubsub_host?: string | null
   tenant_id?: string | null
   check_topic?: boolean
 }

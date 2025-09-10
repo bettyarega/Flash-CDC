@@ -14,7 +14,7 @@ const defaults: CreateClientPayload = {
   oauth_password: '',
   topic_name: '/data/OpportunityChangeEvent',
   webhook_url: '',
-  pubsub_host: 'api.pubsub.salesforce.com:7443',
+  // pubsub_host: 'api.pubsub.salesforce.com:7443',
   tenant_id: '',
   flow_batch_size: 100,
   is_active: true,
@@ -59,7 +59,7 @@ export default function ClientNew() {
         ...form,
         oauth_username: form.oauth_grant_type === 'password' ? form.oauth_username : undefined,
         oauth_password: form.oauth_grant_type === 'password' ? form.oauth_password : undefined,
-        pubsub_host: form.pubsub_host?.trim() || undefined,
+        // pubsub_host: form.pubsub_host?.trim() || undefined,
         tenant_id: form.tenant_id?.trim() || undefined,
       }
       await createClient(payload)
@@ -179,13 +179,13 @@ export default function ClientNew() {
         <section className="rounded border bg-white p-4 space-y-4">
           <h2 className="font-medium">Advanced</h2>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <label className="block">
+            {/* <label className="block">
               <span className="text-sm">Pub/Sub Host</span>
               <input className="mt-1 w-full rounded border px-3 py-2"
                 placeholder="api.pubsub.salesforce.com:7443"
                 value={form.pubsub_host ?? ''}
                 onChange={(e) => update('pubsub_host', e.target.value)} />
-            </label>
+            </label> */}
 
             <label className="block">
               <span className="text-sm">Tenant ID (optional)</span>

@@ -30,6 +30,7 @@ services:
       DB_SCHEMA: ${DB_SCHEMA:-flash}
       RUN_DDL: ${RUN_DDL:-1}        # set 1 on first run to create tables, then 0
       SECRET_KEY: ${SECRET_KEY:-change-me}
+      SF_PUBSUB_HOST: ${SF_PUBSUB_HOST:-api.pubsub.salesforce.com:7443}
     depends_on:
       db:
         condition: service_healthy

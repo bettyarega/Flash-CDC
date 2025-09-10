@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select, func
 import logging
 from pydantic import BaseModel
+import os
 
 from app.services.sf_pubsub import OAuthConfig, test_salesforce_connection
 from app.services.listener_manager import manager
@@ -17,6 +18,9 @@ from ..models import (
     to_safe,
 )
 from app.security import require_roles, RoleEnum
+
+DEFAULT_PUBSUB_HOST = os.getenv("SF_PUBSUB_HOST", "api.pubsub.salesforce.com:7443")
+
 
 router = APIRouter()
 log = logging.getLogger("listener-manager")
@@ -46,7 +50,7 @@ class TestConnectionPayload(BaseModel):
 
     # optional extras
     topic_name: Optional[str] = None
-    pubsub_host: Optional[str] = None
+    # pubsub_host: Optional[str] = None
     tenant_id: Optional[str] = None
     check_topic: bool = True  # if false, skip GetTopic
 
@@ -63,10 +67,12 @@ async def test_connection(payload: TestConnectionPayload):
         password=payload.oauth_password,
         auth_grant_type=payload.oauth_grant_type,
     )
+
+    host = payload.pubsub_host or DEFAULT_PUBSUB_HOST
     res = await test_salesforce_connection(
         oauth,
         topic_name=(payload.topic_name if payload.check_topic else None),
-        pubsub_host=payload.pubsub_host,
+        pubsub_host=host,  
         tenant_id=payload.tenant_id,
     )
     return res
@@ -85,6 +91,9 @@ async def create_client(
 ):
     # Create row
     client = Client.model_validate(payload)
+
+    # Force from env/default
+    client.pubsub_host = os.getenv("SF_PUBSUB_HOST", DEFAULT_PUBSUB_HOST) 
     session.add(client)
     await session.commit()
     await session.refresh(client)
@@ -168,8 +177,16 @@ async def update_client(
 
     # Apply partial updates
     data = payload.model_dump(exclude_unset=True)
+
+    # Never allow pubsub_host updates from API; we control via env
+    if "pubsub_host" in data:
+        data.pop("pubsub_host")
+
     for field, value in data.items():
         setattr(client, field, value)
+
+    # Force env/default every time, so changes take effect immediately on restart
+    client.pubsub_host = os.getenv("SF_PUBSUB_HOST", DEFAULT_PUBSUB_HOST) 
 
     # Re-validate the whole entity after mutation
     Client.model_validate(client)

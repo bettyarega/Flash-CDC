@@ -21,7 +21,7 @@ export default function ClientForm({ mode, initial, onSubmit, onCancel }: Props)
     oauth_password: '',
     topic_name: '',
     webhook_url: '',
-    pubsub_host: 'api.pubsub.salesforce.com:7443',
+    // pubsub_host: 'api.pubsub.salesforce.com:7443',
     tenant_id: '',          // NEW: present in DB
     flow_batch_size: 100,
     is_active: true,
@@ -85,7 +85,7 @@ export default function ClientForm({ mode, initial, onSubmit, onCancel }: Props)
         oauth_username: values.oauth_username ?? undefined,
         oauth_password: values.oauth_password ?? undefined,
         topic_name: values.topic_name ?? undefined,
-        pubsub_host: values.pubsub_host ?? undefined,
+        // pubsub_host: values.pubsub_host ?? undefined,
         tenant_id: (values as any).tenant_id ?? undefined, // NEW
         check_topic: !!values.topic_name,
       }
@@ -162,12 +162,12 @@ export default function ClientForm({ mode, initial, onSubmit, onCancel }: Props)
 
         <TextInput label="Webhook URL" value={values.webhook_url ?? ''} onChange={v => onChange('webhook_url', v)} />
 
-        <TextInput
+        {/* <TextInput
           label="Pub/Sub Host"
           value={values.pubsub_host ?? ''}
           onChange={v => onChange('pubsub_host', v)}
           placeholder="api.pubsub.salesforce.com:7443"
-        />
+        /> */}
 
         {/* NEW: Tenant Id (optional) */}
         <TextInput
