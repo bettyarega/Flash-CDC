@@ -50,7 +50,7 @@ class TestConnectionPayload(BaseModel):
 
     # optional extras
     topic_name: Optional[str] = None
-    # pubsub_host: Optional[str] = None
+    pubsub_host: Optional[str] = None
     tenant_id: Optional[str] = None
     check_topic: bool = True  # if false, skip GetTopic
 

@@ -130,7 +130,7 @@ export type TestConnectionPayload = {
   oauth_username?: string | null
   oauth_password?: string | null
   topic_name?: string | null
-  // pubsub_host?: string | null
+  pubsub_host?: string | null
   tenant_id?: string | null
   check_topic?: boolean
 }
