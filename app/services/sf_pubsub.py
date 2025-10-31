@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import random
 import os
@@ -363,6 +364,21 @@ class SFListener:
             ("instanceurl", self.auth.instance_url or ""),
         ]
 
+    async def _reload_replay_start_from_db(self):
+        """Reload the replay_start from database to get the latest saved offset."""
+        rid_b64 = await _load_replay_b64(self.cfg.client_db_id, self.cfg.topic_name)
+        if rid_b64:
+            LOG.info("[%s] Reloaded replay_id from DB for reconnection", self.cfg.client_id)
+            self._replay_start = ReplayStart(preset=pb2.CUSTOM, replay_id=_b64decode(rid_b64))
+            self.status["replay_start"] = {
+                "preset": "CUSTOM",
+                "has_id": True,
+                "drop_before_ms": None,
+            }
+        else:
+            # No saved offset - keep original replay_start (likely EARLIEST or LATEST)
+            LOG.debug("[%s] No saved replay_id in DB, using original replay_start", self.cfg.client_id)
+
     async def start(self):
         backoff = 1.0
         self._stop.clear()
@@ -373,6 +389,8 @@ class SFListener:
                 self.auth.authenticate()
                 if not self.cfg.tenant_id and self.auth.org_id:
                     self.cfg.tenant_id = self.auth.org_id
+                # Reload replay_id from DB on each reconnection to get latest saved offset
+                await self._reload_replay_start_from_db()
                 await self._connect_channel()
                 await self._diag_gettopic_getschema()
                 await self._subscribe_loop()
@@ -544,24 +562,115 @@ class SFListener:
                         LOG.info("[%s] Event: entity=%s type=%s ids=%s ts=%s",
                                  self.cfg.client_id, entity, change_type, ids, commit_ms)
 
-                        status = await _post_webhook(self.cfg.webhook_url, {
-                            "client_id": self.cfg.client_id,
-                            "topic": self.cfg.topic_name,
-                            "schema_id": schema_id,
-                            "decoded": decoded,
-                        }, self.cfg.client_id)
+                        # Get FlashField__c - could be a list (one per record) or a single value
+                        flash_field_raw = decoded.get("FlashField__c")
+                        LOG.info("[%s] FlashField__c raw value: %r (type=%s, exists=%s)", 
+                                 self.cfg.client_id, flash_field_raw, 
+                                 type(flash_field_raw).__name__ if flash_field_raw is not None else "None",
+                                 "FlashField__c" in decoded)
+                        
+                        # Track if we sent at least one successful webhook, and if we attempted any webhooks
+                        sent_any_webhook = False
+                        attempted_any_webhook = False
+                        last_webhook_status = None
 
-                        # Only commit offset if webhook accepted (2xx)
-                        if 200 <= status < 300:
+                        # Process each record ID separately
+                        if not ids:
+                            LOG.warning("[%s] Event has no recordIds, skipping", self.cfg.client_id)
+                            # Still save offset for events with no recordIds
                             rid_bytes = getattr(ev, "replay_id", None) or getattr(ce, "replay_id", None)
                             if isinstance(rid_bytes, (bytes, bytearray)):
                                 rid_b64 = _b64encode(bytes(rid_bytes))
                                 await _save_replay_b64(self.cfg.client_db_id, self.cfg.topic_name, rid_b64, commit_ms)
                                 self.status["last_replay_b64"] = rid_b64
+                            continue
+
+                        # Get replay_id for this event (save immediately to prevent replay on disconnect)
+                        rid_bytes = getattr(ev, "replay_id", None) or getattr(ce, "replay_id", None)
+                        rid_b64 = None
+                        if isinstance(rid_bytes, (bytes, bytearray)):
+                            rid_b64 = _b64encode(bytes(rid_bytes))
+
+                        for idx, record_id in enumerate(ids):
+                            # Determine FlashField__c value for this record
+                            # If it's a list, use the index; otherwise use the single value
+                            if isinstance(flash_field_raw, list):
+                                flash_field = flash_field_raw[idx] if idx < len(flash_field_raw) else None
+                            else:
+                                flash_field = flash_field_raw
+
+                            # Debug: Log what FlashField__c value we got
+                            LOG.info("[%s] FlashField__c check for recordId=%s: value=%r (type=%s)",
+                                     self.cfg.client_id, record_id, flash_field, type(flash_field).__name__ if flash_field is not None else "None")
+
+                            # Only send webhook if FlashField__c is explicitly True
+                            # Skip if it's None, False, or missing from the event
+                            if flash_field is not True:
+                                if "FlashField__c" in decoded:
+                                    LOG.info("[%s] Skipping webhook: FlashField__c is %r (not True) for recordId=%s (entity=%s)",
+                                             self.cfg.client_id, flash_field, record_id, entity)
+                                else:
+                                    LOG.info("[%s] Skipping webhook: FlashField__c is missing for recordId=%s (entity=%s)",
+                                             self.cfg.client_id, record_id, entity)
+                                continue
+
+                            # Send webhook for this single record ID
+                            attempted_any_webhook = True
+                            LOG.info("[%s] Sending webhook for recordId=%s (entity=%s)", 
+                                     self.cfg.client_id, record_id, entity)
+                            
+                            # Create a modified decoded payload with only this recordId
+                            # Deep copy and modify the decoded payload to have only this recordId
+                            decoded_copy = copy.deepcopy(decoded)
+                            if "ChangeEventHeader" in decoded_copy:
+                                decoded_copy["ChangeEventHeader"] = copy.deepcopy(header)
+                                decoded_copy["ChangeEventHeader"]["recordIds"] = [record_id]
+                            
+                            webhook_payload = {
+                                "client_id": self.cfg.client_id,
+                                "topic": self.cfg.topic_name,
+                                "schema_id": schema_id,
+                                "recordId": record_id,  # Single record ID in body
+                                "decoded": decoded_copy,  # Modified decoded with only this recordId
+                            }
+
+                            status = await _post_webhook(self.cfg.webhook_url, webhook_payload, self.cfg.client_id)
+                            last_webhook_status = status
+                            
+                            if 200 <= status < 300:
+                                sent_any_webhook = True
+
+                        # Save offset after processing event
+                        # Option A: Only save offset if webhook succeeded OR no webhook was needed
+                        # If webhook failed, DON'T save offset so Salesforce will replay it on reconnect
+                        if rid_b64:
+                            if attempted_any_webhook:
+                                # Webhook was attempted - only save if it succeeded
+                                if sent_any_webhook:
+                                    # Webhook succeeded - save offset
+                                    await _save_replay_b64(
+                                        self.cfg.client_db_id, 
+                                        self.cfg.topic_name, 
+                                        rid_b64, 
+                                        commit_ms
+                                    )
+                                    self.status["last_replay_b64"] = rid_b64
+                                    LOG.info("[%s] Saved offset - webhook succeeded", self.cfg.client_id)
+                                else:
+                                    # Webhook failed - DON'T save offset, Salesforce will replay on reconnect
+                                    LOG.warning("[%s] Webhook failed - NOT saving offset, will replay on reconnect to retry webhook",
+                                               self.cfg.client_id)
+                            else:
+                                # No webhook attempted (all records skipped) - save offset since no webhook needed
+                                await _save_replay_b64(self.cfg.client_db_id, self.cfg.topic_name, rid_b64, commit_ms)
+                                self.status["last_replay_b64"] = rid_b64
+                                LOG.debug("[%s] Saved offset (no webhook needed - all records skipped)",
+                                         self.cfg.client_id)
 
                         self.status["events_received"] += 1
                         self.status["last_event_at"] = commit_ms
-                        self.status["last_webhook_status"] = status
+                        if last_webhook_status is not None:
+                            self.status["last_webhook_status"] = last_webhook_status
                     except Exception as e:
                         self.status["last_error"] = f"Event processing error: {e!r}"
                         LOG.error("[%s] Event processing error: %r", self.cfg.client_id, e)
@@ -649,9 +758,12 @@ async def run_salesforce_pubsub(
         start = ReplayStart(preset=pb2.EARLIEST, drop_before_ms=cutoff)
 
     else:  # stored (default): use saved id if present, else earliest
+        # With Option A: if webhook fails, we don't save offset, so last_replay_b64 is the last successful webhook
+        # Salesforce will automatically replay from last saved offset, retrying any failed webhooks
         rid_b64 = await _load_replay_b64(cfg.client_db_id, cfg.topic_name)
         if rid_b64:
-            LOG.info("[%s] Replay start: STORED (using saved id)", cfg.client_id)
+            LOG.info("[%s] Replay start: STORED (using saved id) - will retry any failed webhooks automatically",
+                     cfg.client_id)
             start = ReplayStart(preset=pb2.CUSTOM, replay_id=_b64decode(rid_b64))
         else:
             LOG.info("[%s] Replay start: no saved id -> EARLIEST (first run backfill within retention)", cfg.client_id)
