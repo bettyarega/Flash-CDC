@@ -569,8 +569,9 @@ class SFListener:
                                  type(flash_field_raw).__name__ if flash_field_raw is not None else "None",
                                  "FlashField__c" in decoded)
                         
-                        # Track if we sent at least one successful webhook, and if we attempted any webhooks
-                        sent_any_webhook = False
+                        # Track webhook attempts and results - need ALL attempted webhooks to succeed before saving offset
+                        webhook_attempted_count = 0
+                        webhook_succeeded_count = 0
                         attempted_any_webhook = False
                         last_webhook_status = None
 
@@ -585,7 +586,7 @@ class SFListener:
                                 self.status["last_replay_b64"] = rid_b64
                             continue
 
-                        # Get replay_id for this event (save immediately to prevent replay on disconnect)
+                        # Get replay_id for this event
                         rid_bytes = getattr(ev, "replay_id", None) or getattr(ce, "replay_id", None)
                         rid_b64 = None
                         if isinstance(rid_bytes, (bytes, bytearray)):
@@ -616,6 +617,7 @@ class SFListener:
 
                             # Send webhook for this single record ID
                             attempted_any_webhook = True
+                            webhook_attempted_count += 1
                             LOG.info("[%s] Sending webhook for recordId=%s (entity=%s)", 
                                      self.cfg.client_id, record_id, entity)
                             
@@ -638,16 +640,16 @@ class SFListener:
                             last_webhook_status = status
                             
                             if 200 <= status < 300:
-                                sent_any_webhook = True
+                                webhook_succeeded_count += 1
 
                         # Save offset after processing event
-                        # Option A: Only save offset if webhook succeeded OR no webhook was needed
-                        # If webhook failed, DON'T save offset so Salesforce will replay it on reconnect
+                        # Option A: Only save offset if ALL attempted webhooks succeeded OR no webhook was needed
+                        # If ANY webhook failed, DON'T save offset so Salesforce will replay the entire event on reconnect
                         if rid_b64:
                             if attempted_any_webhook:
-                                # Webhook was attempted - only save if it succeeded
-                                if sent_any_webhook:
-                                    # Webhook succeeded - save offset
+                                # Webhook(s) were attempted - only save if ALL succeeded
+                                if webhook_succeeded_count == webhook_attempted_count:
+                                    # All webhooks succeeded - save offset
                                     await _save_replay_b64(
                                         self.cfg.client_db_id, 
                                         self.cfg.topic_name, 
@@ -655,11 +657,14 @@ class SFListener:
                                         commit_ms
                                     )
                                     self.status["last_replay_b64"] = rid_b64
-                                    LOG.info("[%s] Saved offset - webhook succeeded", self.cfg.client_id)
+                                    LOG.info("[%s] Saved offset - all %d webhook(s) succeeded", 
+                                            self.cfg.client_id, webhook_succeeded_count)
                                 else:
-                                    # Webhook failed - DON'T save offset, Salesforce will replay on reconnect
-                                    LOG.warning("[%s] Webhook failed - NOT saving offset, will replay on reconnect to retry webhook",
-                                               self.cfg.client_id)
+                                    # At least one webhook failed - DON'T save offset, Salesforce will replay entire event
+                                    LOG.warning("[%s] %d of %d webhook(s) failed - NOT saving offset, will replay entire event on reconnect to retry failed webhooks",
+                                               self.cfg.client_id, 
+                                               webhook_attempted_count - webhook_succeeded_count,
+                                               webhook_attempted_count)
                             else:
                                 # No webhook attempted (all records skipped) - save offset since no webhook needed
                                 await _save_replay_b64(self.cfg.client_db_id, self.cfg.topic_name, rid_b64, commit_ms)
