@@ -174,11 +174,39 @@ async def _save_replay_b64(client_db_id: int, topic: str, replay_b64: str, last_
         LOG.debug("offset upsert failed (fallback to memory): %r", e)
     _OFFSETS_MEM[(client_db_id, topic)] = (replay_b64, last_commit_ms)
 
+async def _clear_replay_b64(client_db_id: int, topic: str) -> None:
+    """Clear the stored replay_id (e.g., when it's invalid)."""
+    try:
+        await _ensure_offsets_table()
+        async with async_session_factory() as s:
+            await s.execute(sql_text(f"SET search_path TO {DB_SCHEMA}, public"))
+            upd = f"""
+                UPDATE {DB_SCHEMA}.listener_offsets
+                SET last_replay_b64=NULL, updated_at=now()
+                WHERE client_id=:cid AND topic_name=:tn
+            """
+            await s.execute(sql_text(upd), {"cid": client_db_id, "tn": topic})
+            await s.commit()
+            # Also clear from memory cache
+            if (client_db_id, topic) in _OFFSETS_MEM:
+                old_b64, old_ms = _OFFSETS_MEM[(client_db_id, topic)]
+                _OFFSETS_MEM[(client_db_id, topic)] = (None, old_ms)
+    except Exception as e:
+        LOG.debug("offset clear failed (fallback to memory): %r", e)
+        # Clear from memory cache anyway
+        if (client_db_id, topic) in _OFFSETS_MEM:
+            old_b64, old_ms = _OFFSETS_MEM[(client_db_id, topic)]
+            _OFFSETS_MEM[(client_db_id, topic)] = (None, old_ms)
+
 def _b64encode(b: bytes) -> str:
     return base64.b64encode(b).decode("ascii")
 
 def _b64decode(s: str) -> bytes:
-    return base64.b64decode(s.encode("ascii"))
+    """Decode base64 string to bytes, with error handling."""
+    try:
+        return base64.b64decode(s.encode("ascii"))
+    except Exception as e:
+        raise ValueError(f"Invalid base64 replay_id: {e}") from e
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
@@ -381,13 +409,27 @@ class SFListener:
         """Reload the replay_start from database to get the latest saved offset."""
         rid_b64 = await _load_replay_b64(self.cfg.client_db_id, self.cfg.topic_name)
         if rid_b64:
-            LOG.info("[%s] Reloaded replay_id from DB for reconnection", self.cfg.client_id)
-            self._replay_start = ReplayStart(preset=pb2.CUSTOM, replay_id=_b64decode(rid_b64))
-            self.status["replay_start"] = {
-                "preset": "CUSTOM",
-                "has_id": True,
-                "drop_before_ms": None,
-            }
+            try:
+                rid_bytes = _b64decode(rid_b64)
+                LOG.info("[%s] Reloaded replay_id from DB for reconnection", self.cfg.client_id)
+                self._replay_start = ReplayStart(preset=pb2.CUSTOM, replay_id=rid_bytes)
+                self.status["replay_start"] = {
+                    "preset": "CUSTOM",
+                    "has_id": True,
+                    "drop_before_ms": None,
+                }
+            except ValueError as e:
+                LOG.warning("[%s] Invalid replay_id in DB (corrupted base64): %s. Clearing and using EARLIEST.", 
+                           self.cfg.client_id, e)
+                await _clear_replay_b64(self.cfg.client_db_id, self.cfg.topic_name)
+                # Fall back to EARLIEST if we were using stored mode
+                if self._replay_start.preset == pb2.CUSTOM:
+                    self._replay_start = ReplayStart(preset=pb2.EARLIEST)
+                    self.status["replay_start"] = {
+                        "preset": "EARLIEST",
+                        "has_id": False,
+                        "drop_before_ms": None,
+                    }
         else:
             # No saved offset - keep original replay_start (likely EARLIEST or LATEST)
             LOG.debug("[%s] No saved replay_id in DB, using original replay_start", self.cfg.client_id)
@@ -420,11 +462,27 @@ class SFListener:
                 code = e.code()
                 msg = e.details()
                 self.status["last_error"] = f"{code.name}: {msg}"
-                if code in (grpc.StatusCode.NOT_FOUND, grpc.StatusCode.PERMISSION_DENIED) and FAIL_FAST_NOT_FOUND:
+                
+                # Handle INVALID_ARGUMENT errors related to replay_id validation
+                if code == grpc.StatusCode.INVALID_ARGUMENT and "replay" in msg.lower() and "id" in msg.lower():
+                    LOG.warning("[%s] Invalid replay_id detected: %s. Clearing stored replay_id and falling back to EARLIEST.", 
+                               self.cfg.client_id, msg)
+                    await _clear_replay_b64(self.cfg.client_db_id, self.cfg.topic_name)
+                    # Reset to EARLIEST for next connection attempt
+                    self._replay_start = ReplayStart(preset=pb2.EARLIEST)
+                    self.status["replay_start"] = {
+                        "preset": "EARLIEST",
+                        "has_id": False,
+                        "drop_before_ms": None,
+                    }
+                    # Continue to reconnect with EARLIEST
+                
+                elif code in (grpc.StatusCode.NOT_FOUND, grpc.StatusCode.PERMISSION_DENIED) and FAIL_FAST_NOT_FOUND:
                     self.status["fatal"] = True
                     LOG.error("[%s] gRPC error %s: %s. Stopping (fail-fast).", self.cfg.client_id, code.name, msg)
                     break
-                LOG.error("[%s] gRPC error %s: %s", self.cfg.client_id, code.name, msg)
+                else:
+                    LOG.error("[%s] gRPC error %s: %s", self.cfg.client_id, code.name, msg)
 
             except Exception as e:
                 self.status["last_error"] = repr(e)
@@ -765,8 +823,12 @@ async def run_salesforce_pubsub(
             rid = _b64decode(replay.replay_id_b64)
             LOG.info("[%s] Replay start: CUSTOM id provided", cfg.client_id)
             start = ReplayStart(preset=pb2.CUSTOM, replay_id=rid)
-        except Exception:
-            LOG.error("[%s] invalid custom replay_id_b64; falling back to LATEST", cfg.client_id)
+        except ValueError as e:
+            LOG.error("[%s] invalid custom replay_id_b64 (base64 decode failed): %s; falling back to LATEST", 
+                     cfg.client_id, e)
+            start = ReplayStart(preset=pb2.LATEST)
+        except Exception as e:
+            LOG.error("[%s] invalid custom replay_id_b64: %s; falling back to LATEST", cfg.client_id, e)
             start = ReplayStart(preset=pb2.LATEST)
 
     elif mode == "since" and replay and replay.since_minutes and replay.since_minutes > 0:
@@ -780,9 +842,17 @@ async def run_salesforce_pubsub(
         # Salesforce will automatically replay from last saved offset, retrying any failed webhooks
         rid_b64 = await _load_replay_b64(cfg.client_db_id, cfg.topic_name)
         if rid_b64:
-            LOG.info("[%s] Replay start: STORED (using saved id) - will retry any failed webhooks automatically",
-                     cfg.client_id)
-            start = ReplayStart(preset=pb2.CUSTOM, replay_id=_b64decode(rid_b64))
+            try:
+                rid_bytes = _b64decode(rid_b64)
+                LOG.info("[%s] Replay start: STORED (using saved id) - will retry any failed webhooks automatically",
+                         cfg.client_id)
+                start = ReplayStart(preset=pb2.CUSTOM, replay_id=rid_bytes)
+            except ValueError as e:
+                LOG.warning("[%s] Invalid replay_id in DB (corrupted base64): %s. Clearing and using EARLIEST.", 
+                           cfg.client_id, e)
+                await _clear_replay_b64(cfg.client_db_id, cfg.topic_name)
+                LOG.info("[%s] Replay start: no saved id -> EARLIEST (first run backfill within retention)", cfg.client_id)
+                start = ReplayStart(preset=pb2.EARLIEST)
         else:
             LOG.info("[%s] Replay start: no saved id -> EARLIEST (first run backfill within retention)", cfg.client_id)
             start = ReplayStart(preset=pb2.EARLIEST)
