@@ -222,6 +222,7 @@ class RoleEnum(str, Enum):
 
 class User(SQLModel, table=True):
     __tablename__ = "users"
+    __table_args__ = {"schema": "flash"}
 
     id: Optional[int] = Field(default=None, primary_key=True)
     email: str = Field(index=True, unique=True)

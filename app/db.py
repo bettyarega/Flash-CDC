@@ -20,6 +20,7 @@ DB_POOL_RECYCLE = int(os.getenv("DB_POOL_RECYCLE", "1800"))  # seconds
 DB_APP_NAME = os.getenv("DB_APP_NAME", "flash-api")  # appears in pg_stat_activity.application_name
 
 # Async engine with a QueuePool under the hood
+# Set search_path at connection level so all queries use the correct schema
 engine = create_async_engine(
     DATABASE_URL,
     echo=False,
@@ -28,8 +29,10 @@ engine = create_async_engine(
     max_overflow=DB_MAX_OVERFLOW,
     pool_recycle=DB_POOL_RECYCLE,
     pool_pre_ping=True,
-    # psycopg(v3): set application_name using libpq options
-    connect_args={"options": f"-c application_name={DB_APP_NAME}"},
+    # psycopg(v3): set application_name and search_path using libpq options
+    connect_args={
+        "options": f"-c application_name={DB_APP_NAME} -c search_path={DB_SCHEMA},public"
+    },
 )
 
 async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
