@@ -1,6 +1,6 @@
 // src/api/clients.ts
 import type { Client } from '../types'
-import { getToken } from './session'
+import { getToken, handleUnauthorized } from './session'
 
 export const BASE_URL =
   (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/+$/, '') ||
@@ -19,6 +19,11 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   })
 
   if (!res.ok) {
+    // Handle 401 Unauthorized - session expired
+    if (res.status === 401) {
+      handleUnauthorized()
+      throw new Error('Session expired. Please sign in again.')
+    }
     const text = await res.text().catch(() => '')
     throw new Error(`${res.status} ${res.statusText}: ${text}`)
   }

@@ -2,6 +2,7 @@
 export type AuthUser = { id: number; email: string; role: 'admin' | 'user' }
 let _token: string | null = null
 let _user: AuthUser | null = null
+let _logoutHandler: (() => void) | null = null
 
 export function setSession(token: string, user: AuthUser) {
   _token = token
@@ -27,6 +28,17 @@ export function clearSession() {
   _user = null
   localStorage.removeItem('jwt')
   localStorage.removeItem('user')
+}
+
+export function setLogoutHandler(handler: () => void) {
+  _logoutHandler = handler
+}
+
+export function handleUnauthorized() {
+  clearSession()
+  if (_logoutHandler) {
+    _logoutHandler()
+  }
 }
 
 export function getToken(): string | null { return _token }

@@ -1,4 +1,5 @@
 import type { ListenerState } from '../types'
+import { getToken, handleUnauthorized } from './session'
 
 const BASE_URL =
   (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/+$/, '') ||
@@ -13,12 +14,21 @@ type ReplayOptions = {
 }
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = getToken()
   const res = await fetch(`${BASE_URL}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
     ...init,
   })
 
   if (!res.ok) {
+    // Handle 401 Unauthorized - session expired
+    if (res.status === 401) {
+      handleUnauthorized()
+      throw new Error('Session expired. Please sign in again.')
+    }
     const text = await res.text().catch(() => '')
     throw new Error(`${res.status} ${res.statusText}: ${text}`)
   }

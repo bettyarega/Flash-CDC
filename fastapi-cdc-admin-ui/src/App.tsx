@@ -15,7 +15,7 @@ import {
 } from './api/listeners'
 import ClientForm from './components/ClientForm'
 import Login from './pages/Login'
-import { loadSession, isLoggedIn, isAdmin, clearSession } from './api/session'
+import { loadSession, isLoggedIn, isAdmin, clearSession, setLogoutHandler } from './api/session'
 
 import { listUsers, createUser, updateUser, deleteUser } from './api/users'
 import UserForm from './components/UserForm'
@@ -45,6 +45,12 @@ export default function App() {
   useEffect(() => {
     loadSession()
     setAuthed(isLoggedIn())
+    
+    // Register logout handler for 401 errors
+    setLogoutHandler(() => {
+      clearSession()
+      setAuthed(false)
+    })
   }, [])
 
   return authed ? (
