@@ -6,7 +6,7 @@ type Grant = 'password' | 'client_credentials'
 
 const defaults: CreateClientPayload = {
   client_name: '',
-  login_url: 'https://login.salesforce.com',
+  login_url: '',
   oauth_grant_type: 'password',
   oauth_client_id: '',
   oauth_client_secret: '',
@@ -34,9 +34,10 @@ export default function ClientNew() {
     if (!/^https?:\/\//.test(form.login_url)) return 'Login URL must be http(s).'
     if (!form.oauth_client_id) return 'OAuth client id is required.'
     if (!form.oauth_client_secret) return 'OAuth client secret is required.'
-    if (form.oauth_grant_type === 'password') {
-      if (!form.oauth_username) return 'Username is required for password grant.'
-      if (!form.oauth_password) return 'Password is required for password grant.'
+    // Both password and client_credentials require username/password for Salesforce
+    if (form.oauth_grant_type === 'password' || form.oauth_grant_type === 'client_credentials') {
+      if (!form.oauth_username) return 'Username is required for this grant type.'
+      if (!form.oauth_password) return 'Password is required for this grant type.'
     }
     if (!form.topic_name.startsWith('/data/')) return 'Topic should start with /data/.'
     if (!/^https?:\/\//.test(form.webhook_url)) return 'Webhook URL must be http(s).'
@@ -57,8 +58,13 @@ export default function ClientNew() {
       // empty strings -> undefined for nullable fields
       const payload: CreateClientPayload = {
         ...form,
-        oauth_username: form.oauth_grant_type === 'password' ? form.oauth_username : undefined,
-        oauth_password: form.oauth_grant_type === 'password' ? form.oauth_password : undefined,
+        // Both password and client_credentials require username/password for Salesforce
+        oauth_username: (form.oauth_grant_type === 'password' || form.oauth_grant_type === 'client_credentials') 
+          ? form.oauth_username 
+          : undefined,
+        oauth_password: (form.oauth_grant_type === 'password' || form.oauth_grant_type === 'client_credentials') 
+          ? form.oauth_password 
+          : undefined,
         // pubsub_host: form.pubsub_host?.trim() || undefined,
         tenant_id: form.tenant_id?.trim() || undefined,
       }
@@ -129,6 +135,11 @@ export default function ClientNew() {
               <input className="mt-1 w-full rounded border px-3 py-2"
                 value={form.login_url}
                 onChange={(e) => update('login_url', e.target.value)} />
+              {form.oauth_grant_type === 'client_credentials' ? (
+                <p className="text-xs text-gray-500 mt-1">Enter your Salesforce org URL (e.g., yourdomain.my.salesforce.com or yourdomain--sandbox.sandbox.my.salesforce.com)</p>
+              ) : (
+                <p className="text-xs text-gray-500 mt-1">Use: https://login.salesforce.com</p>
+              )}
             </label>
 
             <label className="block">
@@ -155,7 +166,7 @@ export default function ClientNew() {
                 onChange={(e) => update('oauth_client_secret', e.target.value)} />
             </label>
 
-            {form.oauth_grant_type === 'password' && (
+            {(form.oauth_grant_type === 'password' || form.oauth_grant_type === 'client_credentials') && (
               <>
                 <label className="block">
                   <span className="text-sm">Username</span>

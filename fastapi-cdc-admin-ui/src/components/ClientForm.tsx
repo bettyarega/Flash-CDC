@@ -13,7 +13,7 @@ type Props = {
 export default function ClientForm({ mode, initial, onSubmit, onCancel }: Props) {
   const [values, setValues] = useState<Partial<Client>>({
     client_name: '',
-    login_url: 'https://login.salesforce.com',
+    login_url: '',
     oauth_grant_type: 'password',
     oauth_client_id: '',
     oauth_client_secret: '',
@@ -43,23 +43,16 @@ export default function ClientForm({ mode, initial, onSubmit, onCancel }: Props)
   const [testError, setTestError] = useState<string | null>(null)
 
   const isPasswordGrant = (values.oauth_grant_type ?? 'password') === 'password'
+  // Both password and client_credentials require username/password for Salesforce
+  const showUsernamePassword = isPasswordGrant || values.oauth_grant_type === 'client_credentials'
 
   function onChange<K extends keyof Client>(key: K, val: any) {
     setValues(v => ({ ...v, [key]: val }))
   }
 
   function onGrantTypeChange(v: string) {
-    // If moving to client_credentials, clear username/password to avoid sending them
-    if (v === 'client_credentials') {
-      setValues(s => ({
-        ...s,
-        oauth_grant_type: v as any,
-        oauth_username: '',
-        oauth_password: '',
-      }))
-    } else {
-      setValues(s => ({ ...s, oauth_grant_type: v as any }))
-    }
+    // Both grant types require username/password, so don't clear them
+    setValues(s => ({ ...s, oauth_grant_type: v as any }))
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -117,7 +110,14 @@ export default function ClientForm({ mode, initial, onSubmit, onCancel }: Props)
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <TextInput label="Client Name" value={values.client_name ?? ''} onChange={v => onChange('client_name', v)} required />
 
-        <TextInput label="Login URL" value={values.login_url ?? ''} onChange={v => onChange('login_url', v)} required />
+        <div>
+          <TextInput label="Login URL" value={values.login_url ?? ''} onChange={v => onChange('login_url', v)} required />
+          {values.oauth_grant_type === 'client_credentials' ? (
+            <p className="text-xs text-gray-500 mt-1">Enter your Salesforce org URL (e.g., yourdomain.my.salesforce.com or yourdomain--sandbox.sandbox.my.salesforce.com)</p>
+          ) : (
+            <p className="text-xs text-gray-500 mt-1">Use: https://login.salesforce.com</p>
+          )}
+        </div>
 
         <Select
           label="OAuth Grant Type"
@@ -140,7 +140,7 @@ export default function ClientForm({ mode, initial, onSubmit, onCancel }: Props)
           onChange={v => onChange('oauth_client_secret', v)}
         />
 
-        {isPasswordGrant && (
+        {showUsernamePassword && (
           <>
             <TextInput label="Username" value={values.oauth_username ?? ''} onChange={v => onChange('oauth_username', v)} />
             <TextInput

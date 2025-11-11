@@ -69,6 +69,10 @@ class ClientBase(SQLModel):
     @field_validator("login_url")
     @classmethod
     def validate_login_url(cls, v: str) -> str:
+        # Normalize: ensure URL has a scheme (https://)
+        v = v.strip()
+        if not v.startswith(("http://", "https://")):
+            v = f"https://{v}"
         _ = _url_adapter.validate_python(v)
         return str(v)
 
@@ -104,9 +108,10 @@ class ClientBase(SQLModel):
         if self.oauth_grant_type == GrantType.password:
             if not self.oauth_username or not self.oauth_password:
                 raise ValueError("For grant_type=password, oauth_username and oauth_password are required.")
-        else:
-            if self.oauth_username or self.oauth_password:
-                raise ValueError("For grant_type=client_credentials, do not provide oauth_username or oauth_password.")
+        else:  # client_credentials
+            # Salesforce's client_credentials flow requires username and password
+            if not self.oauth_username or not self.oauth_password:
+                raise ValueError("For grant_type=client_credentials, oauth_username and oauth_password are required for Salesforce.")
         return self
 
 
@@ -152,8 +157,9 @@ class ClientUpdate(SQLModel):
             if (self.oauth_username is None) ^ (self.oauth_password is None):
                 raise ValueError("When setting grant_type=password, both oauth_username and oauth_password must be provided together.")
         if self.oauth_grant_type == GrantType.client_credentials:
-            if self.oauth_username is not None or self.oauth_password is not None:
-                raise ValueError("When setting grant_type=client_credentials, do not send oauth_username or oauth_password.")
+            # Salesforce's client_credentials flow requires username and password
+            if (self.oauth_username is None) ^ (self.oauth_password is None):
+                raise ValueError("When setting grant_type=client_credentials, both oauth_username and oauth_password must be provided together for Salesforce.")
         # Re-validate changed url/email fields if present
         if self.login_url is not None:
             _url_adapter.validate_python(self.login_url)

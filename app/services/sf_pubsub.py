@@ -216,11 +216,16 @@ class SalesforceAuth:
                 "username": self.cfg.username,
                 "password": self.cfg.password,
             }
-        else:
+        else:  # client_credentials
+            # Salesforce's client_credentials flow requires username, password, and response_type
+            assert self.cfg.username and self.cfg.password, "Client credentials grant requires username/password for Salesforce"
             data = {
                 "grant_type": "client_credentials",
                 "client_id": self.cfg.client_id,
                 "client_secret": self.cfg.client_secret,
+                "username": self.cfg.username,
+                "password": self.cfg.password,
+                "response_type": "code",
             }
 
         token_url = f"{self.cfg.login_url}/services/oauth2/token"
@@ -238,6 +243,14 @@ class SalesforceAuth:
             except Exception:
                 err_txt = e.response.text if getattr(e, "response", None) else str(e)
             if status in (400, 401, 403):
+                # Provide helpful guidance for client_credentials domain issues
+                if self.cfg.auth_grant_type == "client_credentials" and "not supported" in err_txt.lower():
+                    raise FatalConfigError(
+                        f"OAuth failed ({status}): {err_txt}\n"
+                        f"For client_credentials grant type, you may need to use your Salesforce custom domain URL "
+                        f"(e.g., https://yourdomain.my.salesforce.com or https://yourdomain--sandbox.sandbox.my.salesforce.com) "
+                        f"instead of https://login.salesforce.com in the Login URL field."
+                    ) from e
                 raise FatalConfigError(f"OAuth failed ({status}): {err_txt}") from e
             raise
 
