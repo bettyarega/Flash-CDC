@@ -114,7 +114,8 @@ export default function ClientForm({ mode, initial, onSubmit, onCancel }: Props)
 
       {error && (
         <div className="rounded border border-red-300 bg-red-50 p-3 text-red-700">
-          {error}
+          <div className="font-medium mb-1">Error:</div>
+          <div className="text-sm whitespace-pre-line">{error}</div>
         </div>
       )}
 

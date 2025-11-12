@@ -24,16 +24,38 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
       handleUnauthorized()
       throw new Error('Session expired. Please sign in again.')
     }
-    // Try to parse JSON error response (FastAPI returns {"detail": "message"})
+    // Try to parse JSON error response
     const text = await res.text().catch(() => '')
+    let errorMessage = text || `${res.status} ${res.statusText}`
+    
     try {
       const errorJson = JSON.parse(text)
-      const detail = errorJson.detail || errorJson.message || text
-      throw new Error(detail)
+      
+      // Handle FastAPI validation errors (array format)
+      if (Array.isArray(errorJson.detail)) {
+        const formattedErrors = errorJson.detail.map((err: any) => {
+          const field = err.loc && err.loc.length > 1 ? err.loc[err.loc.length - 1] : 'field'
+          // Convert snake_case to Title Case
+          const fieldName = field
+            .split('_')
+            .map((word: string) => word.charAt(0).toUpperCase() + word.slice(1))
+            .join(' ')
+          return `${fieldName}: ${err.msg}`
+        })
+        errorMessage = formattedErrors.join('\n')
+      } else if (errorJson.detail) {
+        // Handle simple detail string or object
+        errorMessage = typeof errorJson.detail === 'string' 
+          ? errorJson.detail 
+          : errorJson.message || JSON.stringify(errorJson.detail)
+      } else if (errorJson.message) {
+        errorMessage = errorJson.message
+      }
     } catch {
-      // If not JSON, use the text as-is
-      throw new Error(text || `${res.status} ${res.statusText}`)
+      // If JSON parsing fails, use the text as-is (already set above)
     }
+    
+    throw new Error(errorMessage)
   }
 
   // 204 No Content → no body to parse

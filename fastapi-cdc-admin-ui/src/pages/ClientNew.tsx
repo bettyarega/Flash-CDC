@@ -87,7 +87,8 @@ export default function ClientNew() {
 
       {error && (
         <div className="mb-4 rounded border border-red-200 bg-red-50 p-3 text-red-700">
-          {error}
+          <div className="font-medium mb-1">Error:</div>
+          <div className="text-sm whitespace-pre-line">{error}</div>
         </div>
       )}
 
