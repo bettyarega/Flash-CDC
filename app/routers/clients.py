@@ -89,6 +89,30 @@ async def create_client(
     include_secrets: bool = Query(True, description="If true (default), return full row with secrets."),
     session: AsyncSession = Depends(get_session),
 ):
+    # Check for duplicate client_name
+    existing_name = (await session.execute(select(Client).where(Client.client_name == payload.client_name))).scalar_one_or_none()
+    if existing_name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Client with name '{payload.client_name}' already exists. Please use a different name."
+        )
+    
+    # Check for duplicate oauth_client_id + topic_name combination
+    existing_combo = (
+        await session.execute(
+            select(Client).where(
+                Client.oauth_client_id == payload.oauth_client_id,
+                Client.topic_name == payload.topic_name
+            )
+        )
+    ).scalar_one_or_none()
+    if existing_combo:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Client already exists for OAuth Client ID '{payload.oauth_client_id}' and topic '{payload.topic_name}'. "
+                   f"Each Salesforce Connected App can only have one listener per topic."
+        )
+    
     # Create row
     client = Client.model_validate(payload)
 
@@ -181,6 +205,42 @@ async def update_client(
     # Never allow pubsub_host updates from API; we control via env
     if "pubsub_host" in data:
         data.pop("pubsub_host")
+
+    # Check for duplicate client_name if it's being updated
+    if "client_name" in data:
+        existing_name = (
+            await session.execute(
+                select(Client).where(
+                    Client.client_name == data["client_name"],
+                    Client.id != client_id  # Exclude current client
+                )
+            )
+        ).scalar_one_or_none()
+        if existing_name:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Client with name '{data['client_name']}' already exists. Please use a different name."
+            )
+    
+    # Check for duplicate oauth_client_id + topic_name combination if either is being updated
+    oauth_client_id = data.get("oauth_client_id", client.oauth_client_id)
+    topic_name = data.get("topic_name", client.topic_name)
+    if "oauth_client_id" in data or "topic_name" in data:
+        existing_combo = (
+            await session.execute(
+                select(Client).where(
+                    Client.oauth_client_id == oauth_client_id,
+                    Client.topic_name == topic_name,
+                    Client.id != client_id  # Exclude current client
+                )
+            )
+        ).scalar_one_or_none()
+        if existing_combo:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Client already exists for OAuth Client ID '{oauth_client_id}' and topic '{topic_name}'. "
+                       f"Each Salesforce Connected App can only have one listener per topic."
+            )
 
     for field, value in data.items():
         setattr(client, field, value)

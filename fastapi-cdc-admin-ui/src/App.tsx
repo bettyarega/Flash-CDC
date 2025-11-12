@@ -160,18 +160,30 @@ function ClientsPanel() {
   }, [])
 
   async function handleCreate(values: Partial<Client>) {
-    await createClient(values as any)
-    setShowCreate(false)
-    await refreshClients()
-    await refreshStatuses()
+    try {
+      await createClient(values as any)
+      setShowCreate(false)
+      await refreshClients()
+      await refreshStatuses()
+    } catch (err: any) {
+      // Error is displayed in ClientForm component
+      // Re-throw so the form can display it
+      throw err
+    }
   }
 
   async function handleEditSave(values: Partial<Client>) {
     if (!editClientId) return
-    await updateClient(editClientId, values as any)
-    setEditClientId(null)
-    await refreshClients()
-    await refreshStatuses()
+    try {
+      await updateClient(editClientId, values as any)
+      setEditClientId(null)
+      await refreshClients()
+      await refreshStatuses()
+    } catch (err: any) {
+      // Error is displayed in ClientForm component
+      // Re-throw so the form can display it
+      throw err
+    }
   }
 
   async function handleDelete(client: Client) {
