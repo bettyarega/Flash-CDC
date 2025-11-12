@@ -38,6 +38,7 @@ export default function ClientForm({ mode, initial, onSubmit, onCancel }: Props)
   }, [mode, initial, hydrated])
 
   const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<TestConnectionResult | null>(null)
   const [testError, setTestError] = useState<string | null>(null)
@@ -58,8 +59,12 @@ export default function ClientForm({ mode, initial, onSubmit, onCancel }: Props)
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setSaving(true)
+    setError(null)
     try {
       await onSubmit(values)
+    } catch (err: any) {
+      setError(err?.message ?? String(err))
+      throw err // Re-throw so parent can handle if needed
     } finally {
       setSaving(false)
     }
@@ -106,6 +111,12 @@ export default function ClientForm({ mode, initial, onSubmit, onCancel }: Props)
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
       <h2 className="text-lg font-semibold">{mode === 'create' ? 'New Client' : 'Edit Client'}</h2>
+
+      {error && (
+        <div className="rounded border border-red-300 bg-red-50 p-3 text-red-700">
+          {error}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <TextInput label="Client Name" value={values.client_name ?? ''} onChange={v => onChange('client_name', v)} required />

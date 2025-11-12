@@ -24,8 +24,16 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
       handleUnauthorized()
       throw new Error('Session expired. Please sign in again.')
     }
+    // Try to parse JSON error response (FastAPI returns {"detail": "message"})
     const text = await res.text().catch(() => '')
-    throw new Error(`${res.status} ${res.statusText}: ${text}`)
+    try {
+      const errorJson = JSON.parse(text)
+      const detail = errorJson.detail || errorJson.message || text
+      throw new Error(detail)
+    } catch {
+      // If not JSON, use the text as-is
+      throw new Error(text || `${res.status} ${res.statusText}`)
+    }
   }
 
   // 204 No Content → no body to parse

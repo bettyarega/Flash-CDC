@@ -48,6 +48,11 @@ async def init_db():
         await conn.execute(text(f"SET search_path TO {DB_SCHEMA}, public"))
 
         if RUN_DDL:
+            # Set schema on tables that don't have it explicitly set in __table_args__
+            # This is needed because we can't mix schema dict with constraints
+            for table in SQLModel.metadata.tables.values():
+                if table.schema is None:
+                    table.schema = DB_SCHEMA
             # Create all tables known to SQLModel.metadata
             await conn.run_sync(SQLModel.metadata.create_all)
 

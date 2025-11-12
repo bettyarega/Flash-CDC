@@ -3,7 +3,7 @@ from typing import Optional
 from datetime import datetime
 from enum import Enum
 from sqlmodel import SQLModel, Field, Column
-from sqlalchemy import DateTime, func
+from sqlalchemy import DateTime, func, UniqueConstraint, MetaData
 from pydantic import (
     ConfigDict,
     TypeAdapter,
@@ -39,7 +39,7 @@ _url_adapter = TypeAdapter(HttpUrl)
 class ClientBase(SQLModel):
     model_config = ConfigDict(from_attributes=True)
 
-    client_name: str = Field(index=True, min_length=2, max_length=100)
+    client_name: str = Field(index=True, unique=True, min_length=2, max_length=100)
 
     # Store as str; validate as URL
     login_url: str = Field(default="https://login.salesforce.com")
@@ -117,7 +117,12 @@ class ClientBase(SQLModel):
 
 class Client(ClientBase, table=True):
     __tablename__ = "clients"
-    __table_args__ = {"schema": "flash"}
+    # Schema is set programmatically in init_db() (see app/db.py)
+    # We can't mix schema dict with UniqueConstraint in __table_args__ tuple in SQLAlchemy
+    # So the schema is set on the table metadata during database initialization
+    __table_args__ = (
+        UniqueConstraint("oauth_client_id", "topic_name", name="uq_clients_oauth_topic"),
+    )
 
     id: Optional[int] = Field(default=None, primary_key=True)
     created_at: Optional[datetime] = Field(
