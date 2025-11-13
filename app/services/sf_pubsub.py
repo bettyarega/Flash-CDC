@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 import logging
 import random
 import os
@@ -633,6 +634,15 @@ class SFListener:
                         LOG.info("[%s] Event: entity=%s type=%s ids=%s ts=%s",
                                  self.cfg.client_id, entity, change_type, ids, commit_ms)
 
+                        # Log full decoded event payload for debugging
+                        try:
+                            # Convert to JSON-serializable format for logging
+                            decoded_log = json.dumps(decoded, default=str, indent=2)
+                            LOG.info("[%s] Full event payload:\n%s", self.cfg.client_id, decoded_log)
+                        except Exception as e:
+                            LOG.warning("[%s] Could not serialize event payload for logging: %r", self.cfg.client_id, e)
+                            LOG.info("[%s] Event payload keys: %s", self.cfg.client_id, list(decoded.keys()))
+
                         # Get FlashField__c - could be a list (one per record) or a single value
                         flash_field_raw = decoded.get("FlashField__c")
                         LOG.info("[%s] FlashField__c raw value: %r (type=%s, exists=%s)", 
@@ -672,15 +682,45 @@ class SFListener:
                                 flash_field = flash_field_raw
 
                             # Debug: Log what FlashField__c value we got
-                            LOG.info("[%s] FlashField__c check for recordId=%s: value=%r (type=%s)",
-                                     self.cfg.client_id, record_id, flash_field, type(flash_field).__name__ if flash_field is not None else "None")
+                            LOG.info("[%s] FlashField__c check for recordId=%s: value=%r (type=%s, repr=%r)",
+                                     self.cfg.client_id, record_id, flash_field, 
+                                     type(flash_field).__name__ if flash_field is not None else "None",
+                                     repr(flash_field))
+
+                            # Normalize FlashField__c value - handle boolean True, string "true", "True", etc.
+                            flash_field_normalized = None
+                            if flash_field is True:
+                                flash_field_normalized = True
+                            elif flash_field is False:
+                                flash_field_normalized = False
+                            elif isinstance(flash_field, str):
+                                # Handle string values: "true", "True", "TRUE", "1", etc.
+                                flash_field_lower = flash_field.lower().strip()
+                                if flash_field_lower in ("true", "1", "yes", "y"):
+                                    flash_field_normalized = True
+                                elif flash_field_lower in ("false", "0", "no", "n", ""):
+                                    flash_field_normalized = False
+                                else:
+                                    LOG.warning("[%s] FlashField__c has unexpected string value: %r for recordId=%s",
+                                               self.cfg.client_id, flash_field, record_id)
+                            elif flash_field is None:
+                                flash_field_normalized = None
+                            else:
+                                # Try to convert to bool if it's a number (1 = True, 0 = False)
+                                try:
+                                    flash_field_normalized = bool(flash_field)
+                                    LOG.info("[%s] FlashField__c converted from %r to bool: %r for recordId=%s",
+                                            self.cfg.client_id, flash_field, flash_field_normalized, record_id)
+                                except Exception:
+                                    LOG.warning("[%s] FlashField__c has unexpected type/value: %r (type=%s) for recordId=%s",
+                                               self.cfg.client_id, flash_field, type(flash_field).__name__, record_id)
 
                             # Only send webhook if FlashField__c is explicitly True
                             # Skip if it's None, False, or missing from the event
-                            if flash_field is not True:
+                            if flash_field_normalized is not True:
                                 if "FlashField__c" in decoded:
-                                    LOG.info("[%s] Skipping webhook: FlashField__c is %r (not True) for recordId=%s (entity=%s)",
-                                             self.cfg.client_id, flash_field, record_id, entity)
+                                    LOG.info("[%s] Skipping webhook: FlashField__c is %r (normalized: %r, not True) for recordId=%s (entity=%s)",
+                                             self.cfg.client_id, flash_field, flash_field_normalized, record_id, entity)
                                 else:
                                     LOG.info("[%s] Skipping webhook: FlashField__c is missing for recordId=%s (entity=%s)",
                                              self.cfg.client_id, record_id, entity)
