@@ -199,12 +199,12 @@ export default function ClientNew() {
                 onChange={(e) => update('pubsub_host', e.target.value)} />
             </label> */}
 
-            <label className="block">
+            {/* <label className="block">
               <span className="text-sm">Tenant ID (optional)</span>
               <input className="mt-1 w-full rounded border px-3 py-2"
                 value={form.tenant_id ?? ''}
                 onChange={(e) => update('tenant_id', e.target.value)} />
-            </label>
+            </label> */}
 
             <label className="block">
               <span className="text-sm">Flow batch size</span>

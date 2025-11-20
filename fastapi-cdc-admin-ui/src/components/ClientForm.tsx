@@ -182,12 +182,12 @@ export default function ClientForm({ mode, initial, onSubmit, onCancel }: Props)
         /> */}
 
         {/* NEW: Tenant Id (optional) */}
-        <TextInput
+        {/* <TextInput
           label="Tenant ID (Org Id)"
           value={(values as any).tenant_id ?? ''}
           onChange={v => onChange('tenant_id' as any, v)}
           placeholder="00Dxxxxxxxxxxxx"
-        />
+        /> */}
 
         {/* <NumberInput
           label="Flow Batch Size"
