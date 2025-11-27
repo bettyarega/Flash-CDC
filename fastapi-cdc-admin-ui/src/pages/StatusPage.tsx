@@ -57,63 +57,42 @@ export default function StatusPage() {
   }
 
   return (
-    <div className="max-w-7xl mx-auto p-6">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold mb-2">Client Status Monitor</h1>
-        <p className="text-sm text-gray-600">Real-time monitoring of client listeners and event processing</p>
-      </div>
-
-      {error && (
-        <div className="mb-4 rounded border border-red-200 bg-red-50 p-3 text-red-700">
-          {error}
-        </div>
-      )}
+    <>
+      {error && <div className="p-3 rounded bg-red-50 text-red-700 border border-red-200">{error}</div>}
 
       {loading ? (
-        <p>Loading status...</p>
+        <p>Loading…</p>
       ) : (
         <div className="overflow-x-auto rounded border border-neutral-200 bg-white">
           <table className="min-w-full border-collapse text-sm">
             <thead>
               <tr className="text-left border-b bg-neutral-50">
-                <th className="p-3">ID</th>
-                <th className="p-3">Client Name</th>
-                <th className="p-3">Topic</th>
-                <th className="p-3">Active</th>
-                <th className="p-3">Listener Status</th>
-                <th className="p-3">Running</th>
-                {/* <th className="p-3">Events Received</th> */}
-                {/* <th className="p-3">Last Error</th> */}
-                <th className="p-3">Started At</th>
-                {/* <th className="p-3">Last Activity</th> */}
-                <th className="p-3">Fail Count</th>
+                <th className="p-2">ID</th>
+                <th className="p-2">Client Name</th>
+                <th className="p-2">Topic</th>
+                <th className="p-2">Active</th>
+                <th className="p-2">Listener Status</th>
+                <th className="p-2">Running</th>
+                {/* <th className="p-2">Events Received</th> */}
+                {/* <th className="p-2">Last Error</th> */}
+                <th className="p-2">Started At</th>
+                {/* <th className="p-2">Last Activity</th> */}
+                <th className="p-2">Fail Count</th>
               </tr>
             </thead>
             <tbody>
               {statuses.map((status) => (
-                <tr key={status.id} className="border-b hover:bg-gray-50">
-                  <td className="p-3">{status.id}</td>
-                  <td className="p-3 font-medium">{status.client_name}</td>
-                  <td className="p-3 text-gray-600">{status.topic_name}</td>
-                  <td className="p-3">
-                    {status.is_active ? (
-                      <span className="text-green-600">Yes</span>
-                    ) : (
-                      <span className="text-gray-400">No</span>
-                    )}
-                  </td>
-                  <td className="p-3">
+                <tr key={status.id} className="border-b">
+                  <td className="p-2">{status.id}</td>
+                  <td className="p-2">{status.client_name}</td>
+                  <td className="p-2">{status.topic_name}</td>
+                  <td className="p-2">{status.is_active ? 'Yes' : 'No'}</td>
+                  <td className="p-2">
                     <StatusBadge status={status.listener_status} />
                   </td>
-                  <td className="p-3">
-                    {status.listener_running ? (
-                      <span className="text-green-600">✓</span>
-                    ) : (
-                      <span className="text-gray-400">—</span>
-                    )}
-                  </td>
-                  {/* <td className="p-3">{status.events_received ?? 0}</td> */}
-                  {/* <td className="p-3">
+                  <td className="p-2">{status.listener_running ? <span className="text-green-600">✓</span> : '—'}</td>
+                  {/* <td className="p-2">{status.events_received ?? 0}</td> */}
+                  {/* <td className="p-2">
                     {status.last_error ? (
                       <span className="text-red-600 text-xs" title={status.last_error}>
                         {status.last_error.length > 50 
@@ -124,24 +103,22 @@ export default function StatusPage() {
                       <span className="text-gray-400">—</span>
                     )}
                   </td> */}
-                  <td className="p-3 text-xs text-gray-600">
-                    {formatDate(status.started_at)}
-                  </td>
-                  {/* <td className="p-3 text-xs text-gray-600">
+                  <td className="p-2">{formatDate(status.started_at)}</td>
+                  {/* <td className="p-2 text-xs text-gray-600">
                     {formatDate(status.last_beat)}
                   </td> */}
-                  <td className="p-3">
+                  <td className="p-2">
                     {status.fail_count && status.fail_count > 0 ? (
                       <span className="text-red-600">{status.fail_count}</span>
                     ) : (
-                      <span className="text-gray-400">0</span>
+                      <span>0</span>
                     )}
                   </td>
                 </tr>
               ))}
               {statuses.length === 0 && (
                 <tr>
-                  <td colSpan={11} className="p-4 text-center text-gray-500">
+                  <td colSpan={8} className="p-4 text-center text-gray-500">
                     No clients found.
                   </td>
                 </tr>
@@ -150,11 +127,7 @@ export default function StatusPage() {
           </table>
         </div>
       )}
-
-      <div className="mt-4 text-xs text-gray-500">
-        Status updates automatically every 30 seconds. Last updated: {new Date().toLocaleTimeString()}
-      </div>
-    </div>
+    </>
   )
 }
 

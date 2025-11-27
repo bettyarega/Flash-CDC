@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..db import async_session_factory, DB_SCHEMA
 from ..models import Client
 from .sf_pubsub import run_salesforce_pubsub, ReplayArgs, FatalConfigError  # worker entrypoint + replay
+from .email_notifications import send_listener_error_notification
 
 log = logging.getLogger("listener-manager")
 
@@ -34,6 +35,7 @@ class Listener:
         self.state = ListenerState(client_id=client_id, status="stopped")
         self._replay: Optional[ReplayArgs] = None  # current replay request
         self._sf_listener_instance: Optional[Any] = None  # Store SFListener instance for status access
+        self._error_email_sent = False  # Track if we've sent an error notification email
 
     def is_running(self) -> bool:
         return self._task is not None and not self._task.done()
@@ -57,6 +59,7 @@ class Listener:
             status="starting",
             started_at=datetime.now(timezone.utc),
         )
+        self._error_email_sent = False  # Reset email flag when starting
         self._task = asyncio.create_task(self._runner(), name=f"listener-{self.client_id}")
         log.info("[manager] start: client %s task created", self.client_id)
 
@@ -92,6 +95,7 @@ class Listener:
         self.state.status = "starting"
         backoff = 1
         max_backoff = 60
+        client: Optional[Client] = None
 
         while not self._stop_event.is_set():
             try:
@@ -122,11 +126,45 @@ class Listener:
                 self.state.last_error = str(e)
                 self.state.fail_count += 1
                 log.error("[manager] Config error for client %s: %s", self.client_id, e)
+                
+                # Send email notification if not already sent
+                if not self._error_email_sent:
+                    self._error_email_sent = True
+                    # Load client if not already loaded
+                    if not client:
+                        client = await self._load_client()
+                    if client:
+                        asyncio.create_task(
+                            send_listener_error_notification(
+                                client_id=client.id,
+                                client_name=client.client_name,
+                                error_message=str(e),
+                                topic_name=client.topic_name,
+                            )
+                        )
+                
                 break  # Don't retry on fatal errors
             except Exception as e:
                 self.state.status = "error"
                 self.state.last_error = str(e)
                 self.state.fail_count += 1
+                
+                # Send email notification on first error
+                if not self._error_email_sent and self.state.fail_count == 1:
+                    self._error_email_sent = True
+                    # Load client if not already loaded
+                    if not client:
+                        client = await self._load_client()
+                    if client:
+                        asyncio.create_task(
+                            send_listener_error_notification(
+                                client_id=client.id,
+                                client_name=client.client_name,
+                                error_message=str(e),
+                                topic_name=client.topic_name,
+                            )
+                        )
+                
                 delay = min(backoff, max_backoff)
                 backoff = min(backoff * 2, max_backoff)
                 try:

@@ -44,6 +44,14 @@ services:
       RUN_DDL: ${RUN_DDL:-1}        # set 1 on first run to create tables, then 0
       SECRET_KEY: ${SECRET_KEY:-change-me}
       SF_PUBSUB_HOST: ${SF_PUBSUB_HOST:-api.pubsub.salesforce.com:7443}
+      # Email notification configuration
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-465}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_USE_TLS: ${SMTP_USE_TLS:-true}
+      SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:-}
+      NOTIFICATION_EMAIL: ${NOTIFICATION_EMAIL:-}
     depends_on:
       db:
         condition: service_healthy
