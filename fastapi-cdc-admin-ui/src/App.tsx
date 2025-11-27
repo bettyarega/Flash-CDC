@@ -15,7 +15,7 @@ import {
 } from './api/listeners'
 import ClientForm from './components/ClientForm'
 import Login from './pages/Login'
-import { loadSession, isLoggedIn, isAdmin, clearSession, setLogoutHandler } from './api/session'
+import { loadSession, isLoggedIn, isAdmin, isAmsa, clearSession, setLogoutHandler } from './api/session'
 
 import { listUsers, createUser, updateUser, deleteUser } from './api/users'
 import UserForm from './components/UserForm'
@@ -62,7 +62,37 @@ export default function App() {
 }
 
 function AuthedApp({ onLogout }: { onLogout: () => void }) {
-  const [view, setView] = useState<'clients' | 'users' | 'status'>('clients')
+  // AMSA users only see status page, others default to clients
+  const [view, setView] = useState<'clients' | 'users' | 'status'>(() => {
+    return isAmsa() ? 'status' : 'clients'
+  })
+
+  // If AMSA user, always show status page
+  if (isAmsa()) {
+    return (
+      <div className="max-w-7xl mx-auto p-6 flex flex-col gap-6">
+        <header className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <h1 className="text-2xl font-bold">Flash Admin</h1>
+            <nav className="flex gap-2">
+              <button
+                className="px-2 py-1 rounded border bg-black text-white"
+                disabled
+              >
+                Status
+              </button>
+            </nav>
+          </div>
+          <div className="flex gap-2 items-center">
+            <button className="px-3 py-2 rounded border" onClick={onLogout}>
+              Sign out
+            </button>
+          </div>
+        </header>
+        <StatusPage />
+      </div>
+    )
+  }
 
   return (
     <div className="max-w-7xl mx-auto p-6 flex flex-col gap-6">

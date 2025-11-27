@@ -224,6 +224,7 @@ def to_safe(client: Client) -> ClientReadSafe:
 class RoleEnum(str, Enum):
     admin = "admin"
     user = "user"
+    amsa = "amsa"
 
 class User(SQLModel, table=True):
     __tablename__ = "users"

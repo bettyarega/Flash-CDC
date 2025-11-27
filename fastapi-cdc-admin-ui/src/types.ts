@@ -28,7 +28,7 @@ export interface Client {
   }
 
 
-export type Role = 'admin' | 'user'
+export type Role = 'admin' | 'user' | 'amsa'
 
 export type User = {
   id: number

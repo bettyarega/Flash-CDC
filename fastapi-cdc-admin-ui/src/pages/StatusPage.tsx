@@ -82,10 +82,10 @@ export default function StatusPage() {
                 <th className="p-3">Active</th>
                 <th className="p-3">Listener Status</th>
                 <th className="p-3">Running</th>
-                <th className="p-3">Events Received</th>
-                <th className="p-3">Last Error</th>
+                {/* <th className="p-3">Events Received</th> */}
+                {/* <th className="p-3">Last Error</th> */}
                 <th className="p-3">Started At</th>
-                <th className="p-3">Last Activity</th>
+                {/* <th className="p-3">Last Activity</th> */}
                 <th className="p-3">Fail Count</th>
               </tr>
             </thead>
@@ -112,8 +112,8 @@ export default function StatusPage() {
                       <span className="text-gray-400">—</span>
                     )}
                   </td>
-                  <td className="p-3">{status.events_received ?? 0}</td>
-                  <td className="p-3">
+                  {/* <td className="p-3">{status.events_received ?? 0}</td> */}
+                  {/* <td className="p-3">
                     {status.last_error ? (
                       <span className="text-red-600 text-xs" title={status.last_error}>
                         {status.last_error.length > 50 
@@ -123,13 +123,13 @@ export default function StatusPage() {
                     ) : (
                       <span className="text-gray-400">—</span>
                     )}
-                  </td>
+                  </td> */}
                   <td className="p-3 text-xs text-gray-600">
                     {formatDate(status.started_at)}
                   </td>
-                  <td className="p-3 text-xs text-gray-600">
+                  {/* <td className="p-3 text-xs text-gray-600">
                     {formatDate(status.last_beat)}
-                  </td>
+                  </td> */}
                   <td className="p-3">
                     {status.fail_count && status.fail_count > 0 ? (
                       <span className="text-red-600">{status.fail_count}</span>

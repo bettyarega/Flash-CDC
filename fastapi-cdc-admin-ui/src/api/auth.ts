@@ -18,7 +18,7 @@ export async function login(email: string, password: string) {
   if (!res.ok) throw new Error(await res.text())
   const data = await res.json()
   setSession(data.access_token, data.user)
-  return data.user as { id: number; email: string; role: 'admin' | 'user' }
+  return data.user as { id: number; email: string; role: 'admin' | 'user' | 'amsa' }
 }
 
 export function bootSession() {
@@ -34,5 +34,5 @@ export async function me() {
     },
   })
   if (!res.ok) throw new Error(await res.text())
-  return (await res.json()) as { id: number; email: string; role: 'admin' | 'user'; is_active: boolean }
+  return (await res.json()) as { id: number; email: string; role: 'admin' | 'user' | 'amsa'; is_active: boolean }
 }

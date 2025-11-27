@@ -1,5 +1,5 @@
 // src/api/session.ts
-export type AuthUser = { id: number; email: string; role: 'admin' | 'user' }
+export type AuthUser = { id: number; email: string; role: 'admin' | 'user' | 'amsa' }
 let _token: string | null = null
 let _user: AuthUser | null = null
 let _logoutHandler: (() => void) | null = null
@@ -44,4 +44,5 @@ export function handleUnauthorized() {
 export function getToken(): string | null { return _token }
 export function getUser(): AuthUser | null { return _user }
 export function isAdmin(): boolean { return _user?.role === 'admin' }
+export function isAmsa(): boolean { return _user?.role === 'amsa' }
 export function isLoggedIn(): boolean { return !!_token }

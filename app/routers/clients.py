@@ -137,12 +137,12 @@ async def create_client(
 @router.get(
     "/status",
     response_model=dict,
-    dependencies=[Depends(require_roles(RoleEnum.admin, RoleEnum.user))],
+    dependencies=[Depends(require_roles(RoleEnum.admin, RoleEnum.user, RoleEnum.amsa))],
 )
 async def get_clients_status(session: AsyncSession = Depends(get_session)):
     """
     Get read-only status of all clients with their listener status.
-    Accessible by both admin and user roles for monitoring purposes.
+    Accessible by admin, user, and amsa roles for monitoring purposes.
     """
     # Get all clients (without secrets for security)
     stmt = select(Client).order_by(Client.id)

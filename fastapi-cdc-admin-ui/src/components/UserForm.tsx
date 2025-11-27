@@ -72,6 +72,7 @@ export default function UserForm(props: Props) {
         >
           <option value="user">User</option>
           <option value="admin">Admin</option>
+          <option value="amsa">AMSA</option>
         </select>
       </label>
 
