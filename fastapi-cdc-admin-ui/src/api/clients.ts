@@ -83,6 +83,26 @@ export async function listClients(): Promise<Client[]> {
   return Array.isArray(data) ? data : data.items ?? []
 }
 
+export type ClientStatus = {
+  id: number
+  client_name: string
+  topic_name: string
+  is_active: boolean
+  webhook_url: string
+  listener_status: 'starting' | 'running' | 'stopping' | 'stopped' | 'error'
+  listener_running: boolean
+  last_error?: string | null
+  started_at?: string | null
+  last_beat?: string | null
+  events_received?: number
+  fail_count?: number
+}
+
+export async function getClientsStatus(): Promise<ClientStatus[]> {
+  const data = await api<{ items: ClientStatus[] }>('/clients/status')
+  return data.items ?? []
+}
+
 export type CreateClientPayload = Omit<Client, 'id' | 'created_at' | 'updated_at'>
 
 export async function createClient(payload: CreateClientPayload): Promise<Client> {

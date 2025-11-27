@@ -9,6 +9,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.db import get_session
 from app.services.listener_manager import manager
+from app.security import require_roles, RoleEnum
 
 router = APIRouter(prefix="/listeners", tags=["listeners"])
 
@@ -56,6 +57,8 @@ async def list_listeners():
     if isinstance(res, list):
         return {"items": res}
     return {"items": res.get("items", [])}  # type: ignore[union-attr]
+
+
 
 
 @router.get("/{client_id}")

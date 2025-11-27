@@ -920,6 +920,10 @@ async def run_salesforce_pubsub(
                 await task
             except asyncio.CancelledError:
                 pass
+        
+        # Check if listener stopped due to a fatal configuration error
+        if listener.status.get("fatal") and listener.status.get("last_error"):
+            raise FatalConfigError(listener.status["last_error"])
 
 
 # --- connection test helper ---

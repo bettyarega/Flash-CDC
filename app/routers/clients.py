@@ -135,6 +135,61 @@ async def create_client(
 
 
 @router.get(
+    "/status",
+    response_model=dict,
+    dependencies=[Depends(require_roles(RoleEnum.admin, RoleEnum.user))],
+)
+async def get_clients_status(session: AsyncSession = Depends(get_session)):
+    """
+    Get read-only status of all clients with their listener status.
+    Accessible by both admin and user roles for monitoring purposes.
+    """
+    # Get all clients (without secrets for security)
+    stmt = select(Client).order_by(Client.id)
+    results = await session.execute(stmt)
+    clients = results.scalars().all()
+    
+    # Get all listener statuses
+    listener_statuses = await manager.status_all()
+    listener_map = {}
+    if isinstance(listener_statuses, dict) and "items" in listener_statuses:
+        for status_item in listener_statuses["items"]:
+            listener_map[status_item["client_id"]] = status_item
+    elif isinstance(listener_statuses, list):
+        for status_item in listener_statuses:
+            listener_map[status_item["client_id"]] = status_item
+    
+    # Note: events_received is only available from SFListener instance, which is not directly accessible
+    # from ListenerManager. It will default to 0 if not available.
+    
+    # Combine client info with listener status
+    status_items = []
+    for client in clients:
+        listener_status = listener_map.get(client.id, {
+            "client_id": client.id,
+            "status": "stopped",
+            "running": False,
+        })
+        
+        status_items.append({
+            "id": client.id,
+            "client_name": client.client_name,
+            "topic_name": client.topic_name,
+            "is_active": client.is_active,
+            "webhook_url": client.webhook_url,
+            "listener_status": listener_status.get("status", "stopped"),
+            "listener_running": listener_status.get("running", False),
+            "last_error": listener_status.get("last_error"),
+            "started_at": listener_status.get("started_at"),
+            "last_beat": listener_status.get("last_beat"),
+            "events_received": listener_status.get("events_received", 0),
+            "fail_count": listener_status.get("fail_count", 0),
+        })
+    
+    return {"items": status_items}
+
+
+@router.get(
     "/",
     response_model=dict,  # {"items":[...], "total":..., "limit":..., "offset":...}
     dependencies=[Depends(require_roles(RoleEnum.admin, RoleEnum.user))],

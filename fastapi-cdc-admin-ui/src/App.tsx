@@ -19,6 +19,7 @@ import { loadSession, isLoggedIn, isAdmin, clearSession, setLogoutHandler } from
 
 import { listUsers, createUser, updateUser, deleteUser } from './api/users'
 import UserForm from './components/UserForm'
+import StatusPage from './pages/StatusPage'
 
 function StatusBadge({ state }: { state?: ListenerState }) {
   const s = state?.status ?? 'stopped'
@@ -61,7 +62,7 @@ export default function App() {
 }
 
 function AuthedApp({ onLogout }: { onLogout: () => void }) {
-  const [view, setView] = useState<'clients' | 'users'>('clients')
+  const [view, setView] = useState<'clients' | 'users' | 'status'>('clients')
 
   return (
     <div className="max-w-7xl mx-auto p-6 flex flex-col gap-6">
@@ -83,6 +84,12 @@ function AuthedApp({ onLogout }: { onLogout: () => void }) {
                 Users
               </button>
             )}
+            <button
+              onClick={() => setView('status')}
+              className={`px-2 py-1 rounded border ${view === 'status' ? 'bg-black text-white' : ''}`}
+            >
+              Status
+            </button>
           </nav>
         </div>
         <div className="flex gap-2 items-center">
@@ -92,7 +99,7 @@ function AuthedApp({ onLogout }: { onLogout: () => void }) {
         </div>
       </header>
 
-      {view === 'clients' ? <ClientsPanel /> : <UsersPanel />}
+      {view === 'clients' ? <ClientsPanel /> : view === 'users' ? <UsersPanel /> : <StatusPage />}
     </div>
   )
 }
@@ -285,7 +292,7 @@ function ClientsPanel() {
                     <td className="p-2">
                       <div className="flex items-center gap-2">
                         <StatusBadge state={st} />
-                        {st?.last_error ? <span title={st.last_error}>⚠️</span> : null}
+                        {st?.last_error ? <span title={st.last_error}></span> : null}
                       </div>
                     </td>
                     <td className="p-2">

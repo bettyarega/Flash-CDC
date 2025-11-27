@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import async_session_factory, DB_SCHEMA
 from ..models import Client
-from .sf_pubsub import run_salesforce_pubsub, ReplayArgs  # worker entrypoint + replay
+from .sf_pubsub import run_salesforce_pubsub, ReplayArgs, FatalConfigError  # worker entrypoint + replay
 
 log = logging.getLogger("listener-manager")
 
@@ -33,6 +33,7 @@ class Listener:
         self._stop_event = asyncio.Event()
         self.state = ListenerState(client_id=client_id, status="stopped")
         self._replay: Optional[ReplayArgs] = None  # current replay request
+        self._sf_listener_instance: Optional[Any] = None  # Store SFListener instance for status access
 
     def is_running(self) -> bool:
         return self._task is not None and not self._task.done()
@@ -114,6 +115,14 @@ class Listener:
 
             except asyncio.CancelledError:
                 break
+            except FatalConfigError as e:
+                # Fatal configuration errors (auth failures, topic not found, etc.)
+                # should show as "error" status, not "stopped"
+                self.state.status = "error"
+                self.state.last_error = str(e)
+                self.state.fail_count += 1
+                log.error("[manager] Config error for client %s: %s", self.client_id, e)
+                break  # Don't retry on fatal errors
             except Exception as e:
                 self.state.status = "error"
                 self.state.last_error = str(e)
@@ -125,7 +134,9 @@ class Listener:
                 except asyncio.TimeoutError:
                     continue
 
-        self.state.status = "stopped"
+        # Only set to "stopped" if we didn't exit due to a fatal error
+        if self.state.status != "error":
+            self.state.status = "stopped"
 
     async def _load_client(self) -> Optional[Client]:
         async with async_session_factory() as session:
