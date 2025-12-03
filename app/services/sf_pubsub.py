@@ -732,19 +732,15 @@ class SFListener:
                             LOG.info("[%s] Sending webhook for recordId=%s (entity=%s)", 
                                      self.cfg.client_id, record_id, entity)
                             
-                            # Create a modified decoded payload with only this recordId
-                            # Deep copy and modify the decoded payload to have only this recordId
-                            decoded_copy = copy.deepcopy(decoded)
-                            if "ChangeEventHeader" in decoded_copy:
-                                decoded_copy["ChangeEventHeader"] = copy.deepcopy(header)
-                                decoded_copy["ChangeEventHeader"]["recordIds"] = [record_id]
-                            
+                            # Format webhook payload as requested: data array with Id, subscriptionTopic, instanceUrl
                             webhook_payload = {
-                                "client_id": self.cfg.client_id,
-                                "topic": self.cfg.topic_name,
-                                "schema_id": schema_id,
-                                "recordId": record_id,  # Single record ID in body
-                                "decoded": decoded_copy,  # Modified decoded with only this recordId
+                                "data": [
+                                    {
+                                        "Id": record_id,
+                                        "subscriptionTopic": self.cfg.topic_name,
+                                        "instanceUrl": self.auth.instance_url or "",
+                                    }
+                                ]
                             }
 
                             status = await _post_webhook(self.cfg.webhook_url, webhook_payload, self.cfg.client_id)
