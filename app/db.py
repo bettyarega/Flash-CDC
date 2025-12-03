@@ -1,4 +1,3 @@
-# app/db.py
 import os
 from typing import AsyncGenerator
 from sqlmodel import SQLModel

@@ -1,4 +1,3 @@
-// src/api/session.ts
 export type AuthUser = { id: number; email: string; role: 'admin' | 'user' | 'amsa' }
 let _token: string | null = null
 let _user: AuthUser | null = null

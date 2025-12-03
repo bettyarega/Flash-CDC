@@ -1,6 +1,3 @@
-"""
-Email notification service for listener errors.
-"""
 import os
 import logging
 from typing import Optional

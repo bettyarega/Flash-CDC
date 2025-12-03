@@ -1,4 +1,3 @@
-// src/api/auth.ts
 import { getToken, setSession, loadSession } from './session'
 
 const BASE_URL =
